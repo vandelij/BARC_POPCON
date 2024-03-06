@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import integrate
+import matplotlib
 from matplotlib import pyplot as plt
 import pint
 ureg = pint.get_application_registry()
@@ -60,7 +61,7 @@ def get_s_fusion(n_e, T_e, impurities=None, reaction='DT'):
 
     s_fusion = s_fusion.to(ureg.MW/(ureg.m**3))
 
-    print(s_fusion.units)
+    # print(s_fusion.units)
 
     return s_fusion
 
@@ -160,7 +161,7 @@ def get_areal_integral(f, n_es, T_es, rs, areal_elongation,
     rs = rs.to(ureg.meter)
     r_integration = integrate.trapezoid(f(n_es, T_es, **kwargs)*rs, 
                                        x=rs)
-    print(r_integration.units)
+    # print(r_integration.units)
     # r_integration *= units * ureg.meter**2
     # print('r_integration: {}'.format(r_integration))
     areal_integral = r_integration * 2 * np.pi * areal_elongation
@@ -178,10 +179,10 @@ def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', 
                                              reaction=reaction,
                                              impurities=impurities)
     
-    print(linear_fusion_power.units)
+    # print(linear_fusion_power.units)
     p_fusion = linear_fusion_power * 2 * np.pi * major_radius
 
-    print(p_fusion.units)
+    # print(p_fusion.units)
     
     return p_fusion
 
@@ -343,9 +344,13 @@ def get_all_parameters(inputs):
 
     # Get power balance parameters
     for i,T_e in enumerate(volumetric_temperatures):
-        T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['T'])
+        # T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['T'])
+        T_e_units = T_e.units
+        T_es = np.array([T_e.magnitude]*len(rs)) * T_e_units
         for j,n_e in enumerate(volumetric_densities):
-            n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['n'])
+            n_e_units = n_e.units
+            n_es = np.array([n_e.magnitude]*len(rs)) * n_e_units
+            # n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['n'])
 
             # Calculate powers
             # print(get_p_fusion(n_es, T_es, rs, inputs['areal_elongation'],
@@ -363,8 +368,8 @@ def get_all_parameters(inputs):
             ## Iterate to get energy confinement time
             continue_loop = True
             energy_confinement_times = [1.0 * ureg.second]
-            for i in range(20):
-
+            iter = 0
+            while continue_loop:
                 output['P_SOL'][i,j] = get_p_sol(n_es, T_es, rs, inputs['areal_elongation'], 
                                                  inputs['minor_radius'], inputs['major_radius'],
                                                 energy_confinement_times[-1], method='total', 
@@ -382,17 +387,22 @@ def get_all_parameters(inputs):
                                                                          magnetic_field_on_axis=inputs['magnetic_field_on_axis'], 
                                                                          H=inputs['confinement']['H'], A=inputs['A'])
                 energy_confinement_times += [(new_confinement_time - energy_confinement_times[-1])*0.2 + energy_confinement_times[-1]]
-                print(energy_confinement_times[-1])
+                # print(energy_confinement_times[-1])
+                iter += 1
                 if energy_confinement_times[-1] is np.NaN:
                     print(energy_confinement_times)
                     raise Exception('energy confinement time is NaN')
                 if (energy_confinement_times[-1] - energy_confinement_times[-2])/energy_confinement_times[-2] < inputs['confinement']['iteration_threshold']:
                     output['energy_confinement_time'][i,j] = energy_confinement_times[-1].to(ureg.second).magnitude
+                    print('converged')
+                    continue_loop = False
+                if iter >=40:
+                    print('DID NOT CONVERGE')
                     continue_loop = False
             # Calculate Q_scientific
             output['Q'][i,j] = get_Q_scientific(output['P_fusion'][i,j], output['P_auxillary'][i,j],
                                                 output['P_ohmic'][i,j])
-            print('\n')
+            # print('\n')
             # break
         # break
     output['P_fusion'] *= ureg.MW
@@ -459,7 +469,9 @@ def plot_popcon(outputs, plot_inputs, figsize=[10,8], dpi=150, savename='popcon.
     xmesh, ymesh = np.meshgrid(outputs['electron_temperature'].to(ureg.keV).magnitude, 
                                outputs['electron_density'].to(ureg.meter**(-3)).magnitude)
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, dpi=dpi)
+
     plot_colors = []
+
     for contour in plot_inputs['contours'].keys():
         if contour.lower()=='greenwald_fraction':
             parameter = np.zeros(outputs['P_fusion'].shape)
@@ -469,6 +481,13 @@ def plot_popcon(outputs, plot_inputs, figsize=[10,8], dpi=150, savename='popcon.
             parameter = outputs[contour]
         if len(pint.UnitRegistry.Quantity(parameter).dimensionality) > 0:
             parameter = parameter.magnitude
+
+        # if contour=='P_fusion':
+        #     cntr = ax.contourf(xmesh, ymesh, parameter.transpose(), cmap='plasma', levels=10,
+        #                        norm=matplotlib.colors.LogNorm())
+        #     cbar = plt.colorbar(cntr)
+        #     cbar.set_label(label=contour)
+
 
         conlines = ax.contour(xmesh, ymesh, parameter.transpose(), 
                           levels=plot_inputs['contours'][contour]['levels'],
