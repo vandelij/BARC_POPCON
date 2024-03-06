@@ -21,6 +21,8 @@ inputs['confinement']['iteration_threshold'] = 0.01
 inputs['confinement']['H'] = 1.0
 inputs['A'] = 2.5
 
+# Method for calculating P_SOL
+inputs['P_SOL_method'] = 'total'
 
 inputs['num_r_points'] = 50
 

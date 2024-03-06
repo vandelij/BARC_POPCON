@@ -237,7 +237,6 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
     if 'total' in method.lower():
         p_sol = p_total_loss
     elif 'partial' in method.lower():
-
         p_sol = p_total_loss - p_radiation
     else:
         raise ValueError(f'The method={method} is not implemented in get_p_sol.')
@@ -372,8 +371,8 @@ def get_all_parameters(inputs):
             while continue_loop:
                 output['P_SOL'][i,j] = get_p_sol(n_es, T_es, rs, inputs['areal_elongation'], 
                                                  inputs['minor_radius'], inputs['major_radius'],
-                                                energy_confinement_times[-1], method='total', 
-                                                p_radiation=output['P_radiation'][i,j],
+                                                energy_confinement_times[-1], method=inputs['P_SOL_method'], 
+                                                p_radiation=output['P_radiation'][i,j]*ureg.MW,
                                                 reaction=inputs['reaction'], impurities=inputs['impurities']).to(ureg.MW).magnitude
                 output['P_auxillary'][i,j] = get_p_auxillary(output['P_fusion'][i,j], output['P_radiation'][i,j],
                                                               output['P_ohmic'][i,j], output['P_SOL'][i,j])
