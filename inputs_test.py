@@ -15,9 +15,8 @@ inputs['plasma_current'] = 10 * ureg.MA
 inputs['magnetic_field_on_axis'] = 10 *ureg.tesla
 
 inputs['confinement'] = {}
-# inputs['confinement']['scaling'] = 'ITER98y2'
+# Scaling options are 'ITER98y2', 'ITER97', or 'ITER89'
 inputs['confinement']['scaling'] = 'ITER89'
-inputs['confinement']['iteration_threshold'] = 0.01
 inputs['confinement']['H'] = 1.0
 inputs['A'] = 2.5
 
