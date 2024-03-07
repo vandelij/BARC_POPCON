@@ -1,7 +1,9 @@
 import numpy as np
+import scipy
 from scipy import integrate
 import matplotlib
 from matplotlib import pyplot as plt
+import warnings
 import pint
 ureg = pint.get_application_registry()
 
@@ -183,6 +185,7 @@ def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', 
     p_fusion = linear_fusion_power * 2 * np.pi * major_radius
 
     # print(p_fusion.units)
+    p_fusion = p_fusion.to(ureg.MW)
     
     return p_fusion
 
@@ -198,6 +201,7 @@ def get_p_bremmstrahlung(n_es, T_es, rs, areal_elongation, major_radius, reactio
                                              impurities=impurities)
     p_bremmstrahlung = linear_brem_power * 2 * np.pi * major_radius
     
+    p_bremmstrahlung = p_bremmstrahlung.to(ureg.MW)
     return p_bremmstrahlung
 
 
@@ -216,7 +220,9 @@ def get_p_loss(n_es, T_es,
     total_pressures = electron_pressures + fusion_reactant_ion_pressures + impurity_ion_pressures
 
     p_loss = 3/2 * total_pressures / energy_confinement_time
-    # print(p_loss.units)
+    # print(f'tau_E = {energy_confinement_time}')
+    # print(f'p_loss = {p_loss}')
+    p_loss = p_loss.to(ureg.MW / (ureg.meter**3))
 
     return p_loss
 
@@ -241,6 +247,7 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
     else:
         raise ValueError(f'The method={method} is not implemented in get_p_sol.')
 
+    p_sol = p_sol.to(ureg.MW)
     return p_sol
 
 
@@ -263,11 +270,14 @@ def get_p_auxillary(p_fusion, p_radiation, p_ohmic, p_sol, alpha_fraction=0.2013
     
     p_auxillary = p_sol + p_radiation - p_ohmic -  alpha_fraction * p_fusion
 
+    p_auxillary = p_auxillary.to(ureg.MW)
+
     return p_auxillary
 
 
 def get_Q_scientific(p_fusion, p_auxillary, p_ohmic):
     Q = p_fusion / (p_auxillary + p_ohmic)
+    # Q = p_fusion / p_auxillary
     return Q
 
 
@@ -310,6 +320,217 @@ def get_energy_confinement_time(method='ITER98y2', p_external=None, plasma_curre
 
     return tau_E
 
+def get_P_aux_from_tau_E(energy_confinement_time, 
+                         method='ITER98y2', p_sol_method='total',
+                         p_ohmic=None, p_alpha=None, p_radiation=None, 
+                         plasma_current=None,
+                         major_radius=None, minor_radius=None, kappa=None,
+                         density=None, magnetic_field_on_axis=None, H=1.0, A=2.5):
+    if method.upper()=='ITER98Y2':
+        # H-Mode Scaling from ITER98y2
+        p_heating = (H * 0.145 * plasma_current.to(ureg.MA).magnitude**0.93 \
+                          * major_radius.to(ureg.meter).magnitude**1.39 \
+                          * minor_radius.to(ureg.meter).magnitude**0.58 \
+                          * kappa**0.78 \
+                          * (density.to(ureg.meter**(-3)).magnitude/1e20)**0.41 \
+                          * magnetic_field_on_axis.to(ureg.tesla).magnitude**0.15 \
+                          * A**0.19 \
+                          * energy_confinement_time.to(ureg.second).magnitude**(-1))**(1/0.69)
+    elif method.upper()=='ITER89':
+        # L-Mode Scaling from ITER89
+        p_heating = (H * 0.048 * plasma_current.to(ureg.MA).magnitude**0.85 \
+                          * major_radius.to(ureg.meter).magnitude**1.2 \
+                          * minor_radius.to(ureg.meter).magnitude**0.3 \
+                          * kappa**0.5 \
+                          * (density.to(ureg.meter**(-3)).magnitude/1e20)**0.1 \
+                          * magnetic_field_on_axis.to(ureg.tesla).magnitude**0.2 \
+                          * A**0.5 \
+                          * energy_confinement_time.to(ureg.second).magnitude**(-1))**(1/0.5)
+    elif method.upper()=='ITER97':
+        # L-Mode Scaling from ITER97
+        epsilon = minor_radius / major_radius
+        p_heating = (H * 0.023 * plasma_current.to(ureg.MA).magnitude**0.96 \
+                          * major_radius.to(ureg.meter).magnitude**1.83 \
+                          * kappa**0.64 \
+                          * (density.to(ureg.meter**(-3)).magnitude/1e19)**0.40 \
+                          * magnetic_field_on_axis.to(ureg.tesla).magnitude**0.03 \
+                          * A**0.20 \
+                          * epsilon**(-0.06) \
+                          * energy_confinement_time.to(ureg.second).magnitude**(-1))**(1/0.73)
+    p_heating = p_heating * ureg.MW
+
+    if p_sol_method=='total':
+        p_auxillary = p_heating - p_ohmic - p_alpha + p_radiation
+    elif p_sol_method=='partial':
+        p_auxillary = p_heating - p_ohmic - p_alpha
+
+    return p_auxillary
+
+
+def p_aux_root_func(energy_confinement_time, 
+                    n_es, T_es, rs,
+                    p_fusion, p_radiation, p_ohmic, reaction, impurities,
+                    p_sol_method, scaling_method,
+                    plasma_current,
+                    major_radius, minor_radius, kappa,
+                    density, magnetic_field_on_axis, H, A, alpha_fraction):
+    
+    p_alpha = p_fusion * alpha_fraction
+    p_sol = get_p_sol(n_es, T_es, rs, kappa, 
+                    minor_radius, major_radius,
+                    energy_confinement_time*ureg.second, method=p_sol_method, 
+                    p_radiation=p_radiation,
+                    reaction=reaction, impurities=impurities)
+    
+    p_aux_1 = get_p_auxillary(p_fusion, p_radiation,
+                            p_ohmic, p_sol).to(ureg.MW).magnitude
+    # print('p_aux_1 = {}'.format(p_aux_1))
+    
+    p_aux_2 = get_P_aux_from_tau_E(energy_confinement_time*ureg.second, 
+                                   method=scaling_method, p_sol_method=p_sol_method, 
+                                p_ohmic=p_ohmic, p_alpha=p_alpha, p_radiation=p_radiation,
+                                plasma_current=plasma_current,
+                                major_radius=major_radius, minor_radius=minor_radius, kappa=kappa,
+                                density=density, magnetic_field_on_axis=magnetic_field_on_axis, 
+                                H=H, A=A).to(ureg.MW).magnitude
+    
+    # print('p_aux_2 = {}'.format(p_aux_2))
+
+    # return p_aux_1 - p_aux_2, p_aux_1, p_aux_2
+    return p_aux_1 - p_aux_2
+
+def get_new_upper_bound(times, ys):
+    ## Check for sign changes in ys
+    mask = np.diff(np.sign(ys)) != 0
+    # Ensure first element is false and len(mask) = len(ys)
+    mask = np.append(False, mask)
+
+    # Find each time that a sign change occurred
+    sign_change_times = times[mask]
+
+    # Use the smallest time where a time change occured,
+    # thereby, getting the smallest root for confinement time
+    new_upper_bound = sign_change_times[0]
+
+    return new_upper_bound
+
+
+def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
+                    n_es=None, T_es=None, rs=None,
+                    p_fusion=None, p_radiation=None, p_ohmic=None, reaction='DT', impurities=None,
+                    p_sol_method='total', scaling_method='ITER98y2',
+                    plasma_current=None,
+                    major_radius=None, minor_radius=None, kappa=None,
+                    density=None, magnetic_field_on_axis=None, H=1.0, A=2.5,
+                    alpha_fraction=0.2013):
+    """ Uses the p_aux_root_func function to find the root of the difference of P_auxillary
+    calculated at various energy confinement times using P_loss to calculate P_auxillary, and using
+    the confinement time empircal scalings to calculate P_auxillary"""
+
+    # Try to find the root without any changes to the bounds
+    try:
+        root  = scipy.optimize.toms748(p_aux_root_func,
+                                        lower_bound,
+                                        upper_bound,
+                                        args=(n_es, T_es, rs,
+                                        p_fusion, p_radiation, p_ohmic, reaction, impurities,
+                                        p_sol_method, scaling_method,
+                                        plasma_current,
+                                        major_radius, minor_radius, kappa,
+                                        density, magnetic_field_on_axis, H, A, alpha_fraction))
+    except:
+        # if root finding failed, try to adjust the upper bound as there may be multiple roots, but
+        # we want to find the smallest one
+        try:
+            times = np.linspace(lower_bound, upper_bound, 200)
+            ys = np.zeros(times.shape)
+
+            for n,time in enumerate(times):
+                ys[n] = p_aux_root_func(time, 
+                                n_es, T_es, rs,
+                                p_fusion, p_radiation, p_ohmic, reaction, impurities,
+                                p_sol_method, scaling_method,
+                                plasma_current,
+                                major_radius, minor_radius, kappa,
+                                density, magnetic_field_on_axis, H, A, alpha_fraction)
+            new_upper_bound = get_new_upper_bound(times, ys)
+
+        # if no roots were found, we may have not have good enough resolution, so try to 
+        # find a sign change in y by using a finer step size for the times array
+        except:
+            try:
+                # print('Using 2,000 times to find root')
+                min_ind = np.argmin(np.abs(ys))
+                # print(times[min_ind])
+                new_lower_bound = times[min_ind]*1e-2
+                new_upper_bound = times[min_ind]*2
+                # times = np.logspace(np.log10(new_lower_bound), np.log10(new_upper_bound), 2000)
+                times = np.linspace(new_lower_bound, new_upper_bound, 5000)
+                ys = np.zeros(times.shape)
+                p_aux_1s = np.zeros(times.shape)
+                p_aux_2s = np.zeros(times.shape)
+
+                for n,time in enumerate(times):
+                    ys[n] = p_aux_root_func(time, 
+                                    n_es, T_es, rs,
+                                    p_fusion, p_radiation, p_ohmic, reaction, impurities,
+                                    p_sol_method, scaling_method,
+                                    plasma_current,
+                                    major_radius, minor_radius, kappa,
+                                    density, magnetic_field_on_axis, H, A, alpha_fraction)
+                new_upper_bound = get_new_upper_bound(times, ys)
+            except:
+
+                show_plot = True
+
+        # Once a new upper bound has been set, try to find the root again
+        
+        try:
+            root  = scipy.optimize.toms748(p_aux_root_func,
+                                            lower_bound,
+                                            new_upper_bound,
+                                            args=(n_es, T_es, rs,
+                                            p_fusion, p_radiation, p_ohmic, reaction, impurities,
+                                            p_sol_method, scaling_method,
+                                            plasma_current,
+                                            major_radius, minor_radius, kappa,
+                                            density, magnetic_field_on_axis, H, A))
+            print('density={:.2e}: energy_confinement_time = {:.3f}'.format(density, root))
+        except:
+            # If a root cannot be found, then use the time at which the minimum difference 
+            # between the two calculated P_auxillaries occurs and call that the energy confinement time.
+            # This method is NOT CORRECT, but may estimate the confinement time decently.
+            warnings.warn('Root not found! Using minimum difference as confinement time.')
+            min_ind = np.argmin(np.abs(ys))
+            root = times[min_ind]
+            print('density={:.2e}: energy_confinement_time = {:.3f}'.format(density, root))
+        # show_plot=True
+
+    # if show_plot:   
+    #     fig, ax = plt.subplots(1, 1)
+    #     ax.plot(times, ys)
+    #     min_ind = np.argmin(np.abs(ys))
+    #     ax.plot(times[min_ind], ys[min_ind], '.', ms=8)
+    #     ax.set_ylim(-20, 20)
+    #     ax.set_xlabel('Confinement Time')
+    #     ax.set_ylabel('Y')
+
+    #     # fig2, ax2 = plt.subplots(1,1)
+    #     # ax2.plot(times, p_aux_1s, '.-', label='p_aux_1')
+    #     # ax2.plot(times, p_aux_2s, '.-', label='p_aux_2')
+    #     # ax2.set_yscale('log')
+    #     # ax2.set_xscale('log')
+    #     # ax2.legend()
+
+
+    #     plt.show()
+
+    energy_confinement_time = root * ureg.second
+
+    return energy_confinement_time
+
+    
+
 
 def get_greenwald_density(plasma_current, minor_radius):
     n_G = plasma_current.to(ureg.MA) / (np.pi * (minor_radius.to(ureg.meter))**2)
@@ -343,13 +564,13 @@ def get_all_parameters(inputs):
 
     # Get power balance parameters
     for i,T_e in enumerate(volumetric_temperatures):
-        # T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['T'])
-        T_e_units = T_e.units
-        T_es = np.array([T_e.magnitude]*len(rs)) * T_e_units
+        T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['T'])
+        # T_e_units = T_e.units
+        # T_es = np.array([T_e.magnitude]*len(rs)) * T_e_units
         for j,n_e in enumerate(volumetric_densities):
-            n_e_units = n_e.units
-            n_es = np.array([n_e.magnitude]*len(rs)) * n_e_units
-            # n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['n'])
+            # n_e_units = n_e.units
+            # n_es = np.array([n_e.magnitude]*len(rs)) * n_e_units
+            n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['n'])
 
             # Calculate powers
             # print(get_p_fusion(n_es, T_es, rs, inputs['areal_elongation'],
@@ -365,39 +586,39 @@ def get_all_parameters(inputs):
                                                               inputs['major_radius'], inputs['areal_elongation']).to(ureg.MW).magnitude
             
             ## Iterate to get energy confinement time
-            continue_loop = True
-            energy_confinement_times = [1.0 * ureg.second]
-            iter = 0
-            while continue_loop:
-                output['P_SOL'][i,j] = get_p_sol(n_es, T_es, rs, inputs['areal_elongation'], 
-                                                 inputs['minor_radius'], inputs['major_radius'],
-                                                energy_confinement_times[-1], method=inputs['P_SOL_method'], 
-                                                p_radiation=output['P_radiation'][i,j]*ureg.MW,
-                                                reaction=inputs['reaction'], impurities=inputs['impurities']).to(ureg.MW).magnitude
-                output['P_auxillary'][i,j] = get_p_auxillary(output['P_fusion'][i,j], output['P_radiation'][i,j],
-                                                              output['P_ohmic'][i,j], output['P_SOL'][i,j])
-                p_external = output['P_auxillary'][i,j]*ureg.MW + output['P_ohmic'][i,j]*ureg.MW
+            energy_confinement_time_guess = 1.0 * ureg.second
 
-                # Recalculate energy confinement time
-                new_confinement_time = get_energy_confinement_time(method=inputs['confinement']['scaling'], 
-                                                                         p_external=p_external, plasma_current=inputs['plasma_current'],
-                                                                         major_radius=inputs['major_radius'], minor_radius=inputs['minor_radius'], 
-                                                                         kappa=inputs['areal_elongation'], density=n_e,
-                                                                         magnetic_field_on_axis=inputs['magnetic_field_on_axis'], 
-                                                                         H=inputs['confinement']['H'], A=inputs['A'])
-                energy_confinement_times += [(new_confinement_time - energy_confinement_times[-1])*0.2 + energy_confinement_times[-1]]
-                # print(energy_confinement_times[-1])
-                iter += 1
-                if energy_confinement_times[-1] is np.NaN:
-                    print(energy_confinement_times)
-                    raise Exception('energy confinement time is NaN')
-                if (energy_confinement_times[-1] - energy_confinement_times[-2])/energy_confinement_times[-2] < inputs['confinement']['iteration_threshold']:
-                    output['energy_confinement_time'][i,j] = energy_confinement_times[-1].to(ureg.second).magnitude
-                    print('converged')
-                    continue_loop = False
-                if iter >=40:
-                    print('DID NOT CONVERGE')
-                    continue_loop = False
+            tau_E = get_converged_confinement_time( 
+                    lower_bound=1e-5, upper_bound=500,
+                    n_es=n_es, T_es=T_es, rs=rs,
+                    p_fusion=output['P_fusion'][i,j]*ureg.MW, 
+                    p_radiation=output['P_radiation'][i,j]*ureg.MW, 
+                    p_ohmic=output['P_ohmic'][i,j]*ureg.MW, 
+                    reaction=inputs['reaction'], 
+                    impurities=inputs['impurities'],
+                    p_sol_method=inputs['P_SOL_method'], 
+                    scaling_method=inputs['confinement']['scaling'],
+                    plasma_current=inputs['plasma_current'],
+                    major_radius=inputs['major_radius'], 
+                    minor_radius=inputs['minor_radius'], 
+                    kappa=inputs['areal_elongation'],
+                    density=n_e, 
+                    magnetic_field_on_axis=inputs['magnetic_field_on_axis'], 
+                    H=inputs['confinement']['H'], 
+                    A=inputs['A'])
+            
+            output['energy_confinement_time'][i,j] = tau_E.to(ureg.second).magnitude
+
+            output['P_SOL'][i,j] = get_p_sol(n_es, T_es, rs, inputs['areal_elongation'], 
+                                             inputs['minor_radius'], inputs['major_radius'],
+                                             tau_E, method=inputs['P_SOL_method'], 
+                                             p_radiation=output['P_radiation'][i,j]*ureg.MW,
+                                             reaction=inputs['reaction'], impurities=inputs['impurities']).to(ureg.MW).magnitude
+            
+            output['P_auxillary'][i,j] = get_p_auxillary(output['P_fusion'][i,j]*ureg.MW, output['P_radiation'][i,j]*ureg.MW,
+                                                         output['P_ohmic'][i,j]*ureg.MW, output['P_SOL'][i,j]*ureg.MW).to(ureg.MW).magnitude
+
+                
             # Calculate Q_scientific
             output['Q'][i,j] = get_Q_scientific(output['P_fusion'][i,j], output['P_auxillary'][i,j],
                                                 output['P_ohmic'][i,j])
