@@ -130,7 +130,8 @@ def get_spitzer_resistivity(T_e, n_e, impurities=None, reaction='DT'):
     spitzer_resistivity = spitzer_resistivity * ureg.ohm * ureg.meter
 
     return spitzer_resistivity
-    
+
+
 def get_p_ohmic_classical(T_e, n_e, plasma_current, major_radius, minor_radius, areal_elongation,
                           impurities=None, reaction='DT'):
 
@@ -156,7 +157,8 @@ def get_p_ohmic_neoclassical(plasma_current, T_e, epsilon, major_radius, areal_e
 
     return p_ohmic
 
-def get_areal_integral(f, n_es, T_es, rs, areal_elongation,
+
+def get_areal_integral(f, n_es, T_es, rs, major_radius, areal_elongation,
                       **kwargs):
 
     units = f(n_es[0], T_es[0], **kwargs).units
@@ -171,36 +173,91 @@ def get_areal_integral(f, n_es, T_es, rs, areal_elongation,
     return areal_integral
 
 
+def get_vol_integral(f, n_es, T_es, rs, major_radius, areal_elongation, **kwargs):
+
+    dVs = 2*np.pi * major_radius * areal_elongation * np.pi * (rs[1:]**2 - rs[:-1]**2)
+    ds = f(n_es, T_es, **kwargs)
+    dfs = (ds[1:] + ds[:-1])/2 * dVs
+    vol_integral = dfs.sum()
+    
+    # for i,r in enumerate(rs[1:]):
+    #     dV = 2*np.pi * major_radius * areal_elongation * np.pi * (rs[i]**2 - rs[i-1]**2)
+    #     # dV_units = dV.units
+    #     # dV = dV.magnitude
+    #     # Get average of the function evalutated at the inner and outer rho
+    #     ave_power_density = (f(n_es[i], T_es[i], **kwargs) + f(n_es[i-1], T_es[i-1], **kwargs))/2
+    #     # ave_power_density_units = ave_power_density.units
+    #     # ave_power_density = ave_power_density.magnitude
+    #     dfs += [ave_power_density * dV]
+    # vol_integral = np.sum(dfs)
+    # vol_integral *= ave_power_density_units * dV_units
+    return vol_integral
+
+
 def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', impurities=None):
 
-    linear_fusion_power = get_areal_integral(get_s_fusion,
-                                             n_es,
-                                             T_es,
-                                             rs,
-                                             areal_elongation,
-                                             reaction=reaction,
-                                             impurities=impurities)
+    # linear_fusion_power = get_areal_integral(get_s_fusion,
+    #                                          n_es,
+    #                                          T_es,
+    #                                          rs,
+    #                                          areal_elongation,
+    #                                          reaction=reaction,
+    #                                          impurities=impurities)
     
-    # print(linear_fusion_power.units)
-    p_fusion = linear_fusion_power * 2 * np.pi * major_radius
+    # # print(linear_fusion_power.units)
+    # p_fusion = linear_fusion_power * 2 * np.pi * major_radius
 
+    p_fusion = get_vol_integral(get_s_fusion,
+                                n_es,
+                                T_es,
+                                rs,
+                                major_radius,
+                                areal_elongation,
+                                reaction=reaction,
+                                impurities=impurities)
     # print(p_fusion.units)
     p_fusion = p_fusion.to(ureg.MW)
     
     return p_fusion
 
 
+def get_ellipse_circumference(minor_radius, areal_elongation):
+    # Using Ramanujan approximation
+    b = minor_radius * areal_elongation
+    circumference = np.pi * (3*(b + minor_radius) - np.sqrt((3*b + minor_radius)*(b + 3*minor_radius)))
+    return circumference
+
+
+def get_torus_surface_area(major_radius, minor_radius, areal_elongation):
+    circumference = get_ellipse_circumference(minor_radius, areal_elongation)
+    surface_area = circumference * 2 * np.pi * major_radius
+    return surface_area
+
+
+def get_P_fusion_per_area(p_fusion, areal_elongation, major_radius, minor_radius):
+    surface_area = get_torus_surface_area(major_radius, minor_radius, areal_elongation)
+    return p_fusion/surface_area
+
+
 def get_p_bremmstrahlung(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', impurities=None):
 
-    linear_brem_power = get_areal_integral(get_s_bremsstrahlung,
-                                             n_es,
-                                             T_es,
-                                             rs,
-                                             areal_elongation,
-                                             reaction=reaction,
-                                             impurities=impurities)
-    p_bremmstrahlung = linear_brem_power * 2 * np.pi * major_radius
+    # linear_brem_power = get_areal_integral(get_s_bremsstrahlung,
+    #                                          n_es,
+    #                                          T_es,
+    #                                          rs,
+    #                                          areal_elongation,
+    #                                          reaction=reaction,
+    #                                          impurities=impurities)
+    # p_bremmstrahlung = linear_brem_power * 2 * np.pi * major_radius
     
+    p_bremmstrahlung = get_vol_integral(get_s_bremsstrahlung,
+                                n_es,
+                                T_es,
+                                rs,
+                                major_radius,
+                                areal_elongation,
+                                reaction=reaction,
+                                impurities=impurities)
     p_bremmstrahlung = p_bremmstrahlung.to(ureg.MW)
     return p_bremmstrahlung
 
@@ -234,10 +291,19 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
 
     # Calculate volumetric average power loss (dU/dt) of plasma
 
-    p_total_loss_linear = get_areal_integral(get_p_loss, n_es, T_es, rs, areal_elongation,
-                               energy_confinement_time=energy_confinement_time,
-                               reaction=reaction, impurities=impurities)
-    p_total_loss = p_total_loss_linear * 2 * np.pi * major_radius 
+    # p_total_loss_linear = get_areal_integral(get_p_loss, n_es, T_es, rs, areal_elongation,
+    #                            energy_confinement_time=energy_confinement_time,
+    #                            reaction=reaction, impurities=impurities)
+    # p_total_loss = p_total_loss_linear * 2 * np.pi * major_radius 
+    p_total_loss = get_vol_integral(get_p_loss,
+                                    n_es,
+                                    T_es,
+                                    rs,
+                                    major_radius,
+                                    areal_elongation,
+                                    energy_confinement_time=energy_confinement_time,
+                                    reaction=reaction,
+                                    impurities=impurities)
     # print('p_total_loss:{}'.format(p_total_loss))
 
     if 'total' in method.lower():
@@ -251,20 +317,29 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
     return p_sol
 
 
-def get_parabolic_profile(volumetric_average, rs, minor_radius, extrapolation_frac=0.1,
+def get_parabolic_profile(y_0, rs, minor_radius, y_edge, extrapolation_frac=0.1,
                           alpha=1.5):
     """ Computes 1-D parabolic profile based on rho=r/a, the volumetric
     average of the profile, and a specificed alpha (>1)"""
-    a = minor_radius * (1 + extrapolation_frac)
-    y_0 = volumetric_average * (alpha + 1)
-    ys = y_0 * (1 - (rs/a)**2)**(alpha)
+    # a = minor_radius * (1 + extrapolation_frac)
+    # y_0 = volumetric_average * (alpha + 1)
+    # ys = y_0 * (1 - (rs/a)**2)**(alpha)
+
+    ys = (y_0 - y_edge) * (1 - (rs/minor_radius)**2)**(alpha) + y_edge
     return ys
 
 
+def return_func(parameter1, parameter2):
+    return parameter1
 
-def return_func(parameter):
-    return parameter
 
+def get_volume_average(rs, ys, major_radius, minor_radius, areal_elongation):
+
+    numerator = get_vol_integral(return_func, ys, np.ones(ys.shape), rs, major_radius, areal_elongation)
+    # Calculate volume
+    denominator = 2 * np.pi * major_radius * np.pi * minor_radius**2 * areal_elongation
+    y_ave =  numerator / denominator
+    return y_ave
 
 def get_p_auxillary(p_fusion, p_radiation, p_ohmic, p_sol, alpha_fraction=0.2013):
     
@@ -530,6 +605,10 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
     return energy_confinement_time
 
     
+def get_ignition_fraction(p_fusion, p_radiation, p_SOL, alpha_fraction=0.2013):
+    ignition_fraction = p_fusion*alpha_fraction / (p_radiation + p_SOL)
+    # ignition_fraction = ignition_fraction.magnitude()
+    return ignition_fraction
 
 
 def get_greenwald_density(plasma_current, minor_radius):
@@ -538,9 +617,109 @@ def get_greenwald_density(plasma_current, minor_radius):
     return n_G
 
 
+def get_peak_greenwald(plasma_current, minor_radius, n_edge_factor, alpha_n):
+    n_G = get_greenwald_density(plasma_current, minor_radius)
+    # Get peak density (n_0) when average density is at greenwald limit for parabolic profile,
+    # in circular plasma
+    n_G_peak = n_G * (alpha_n + 1) / ((alpha_n + 1)*n_edge_factor + (1 - n_edge_factor))
+    return n_G_peak
+
+
+def get_n_ave(n_0, n_edge_factor, alpha_n):
+    """ Calculates the volume averaged density 
+    for a parabolic profile from the peak density"""
+    n_ave =  n_0 * (((alpha_n + 1)*n_edge_factor + (1 - n_edge_factor)) / (alpha_n + 1))
+    return n_ave
+
+
+def get_p_LH_transition(n_0, n_edge_factor, alpha_n, magnetic_field_on_axis, major_radius, minor_radius):
+    n_ave = get_n_ave(n_0, n_edge_factor, alpha_n)
+
+    p_LH = 1.38 * ureg.MW \
+           * (n_ave.to(ureg.meter**(-3)).magnitude / 1e20)**0.77 \
+           * (magnetic_field_on_axis.to(ureg.tesla).magnitude)**0.92 \
+           * (major_radius.to(ureg.meter).magnitude)**1.23 \
+           * (minor_radius.to(ureg.meter).magnitude)**0.76
+    return p_LH
+
+
+def get_p_LH_transition_2(n_e0, n_edge_factor, alpha_n, major_radius, inverse_aspect_ratio, areal_elongation,
+                          B_toroidal_0,
+                          plasma_current, zeff,
+                          F_A=None, gamma=0.5):
+    """ Get the L to H mode transition power based on:
+    ITPA H-mode Power Threshold Database Working Group presented by T Takizuka
+    2004 Plasma Phys. Control. Fusion 46 A227"""
+    n_ave = get_n_ave(n_e0, n_edge_factor, alpha_n)
+    
+    minor_radius = major_radius * inverse_aspect_ratio
+    A = 1 / inverse_aspect_ratio
+
+    S = get_torus_surface_area(major_radius, minor_radius, areal_elongation)
+    
+    # Get toroidal field at outboard mid-plane
+    B_tout = B_toroidal_0 * A / (A + 1)
+
+    # Get poloidal field at outboard mid-plane
+    mu_0 = 4*np.pi * 1e-7 *ureg.henry / ureg.meter
+    B_pout = mu_0 * plasma_current / (get_ellipse_circumference(minor_radius, areal_elongation))
+
+    # Get total outboard field
+    B_out = np.sqrt(B_pout**2 + B_tout**2)
+
+    if not F_A:
+        f_A = 1 - (2/(1 + A))**(0.5)
+        F_A = 0.1 * A / f_A
+
+    P_LH = 0.072 * (B_out.to(ureg.tesla).magnitude)**(0.7) \
+                * (n_ave.to(ureg.meter**(-3)).magnitude/(1e20))**(0.7) \
+                * (S.to(ureg.meter**2).magnitude)**(0.9) \
+                * (zeff/2)**(0.7) \
+                * F_A**gamma
+    return P_LH
+
+
+
+
+
+
+
+
+def get_q_star(minor_radius, major_radius, areal_elongation, magnetic_field_on_axis, plasma_current):
+    mu_0 = 4*np.pi * 1e-7 *ureg.henry / ureg.meter
+    
+    q_star = 2 * np.pi * minor_radius**2 * magnetic_field_on_axis * areal_elongation \
+           / (mu_0 * major_radius * plasma_current)
+    return q_star
+
+
+def get_SepOS_density_limit(p_SOL, q_cyl, magnetic_field_on_axis, n_edge_factor):
+    n_sep_limit = 8.38 * (p_SOL.to(ureg.MW).magnitude)**0.4 \
+                       * (q_cyl)**(-1.12) \
+                       * (magnetic_field_on_axis.to(ureg.tesla).magnitude)**(0.73)
+
+    n_0_limit = n_sep_limit * ureg.meter**(-3) * 1e19 / n_edge_factor
+    return n_0_limit
+
+
+def get_bernert_density_limit(p_heat, plasma_current, q_95, n_edge_factor):
+    # print('q_95 = {}'.format(q_95.to_reduced_units()))
+    n_sep_bernert_limit = 0.51 * (p_heat.to(ureg.MW).magnitude)**0.39 \
+                       * (q_95.magnitude)**(-0.32) \
+                       * (plasma_current.to(ureg.MA).magnitude)**(0.27)
+    n_0_bernert_limit = n_sep_bernert_limit * ureg.meter**(-3) * 1e19 / n_edge_factor
+    # print('n_0_limit = {}'.format(n_0_limit))
+    return n_0_bernert_limit
+
+
 def get_all_parameters(inputs):
     """ inputs: dict"""
     inputs['minor_radius'] = inputs['major_radius'] * inputs['inverse_aspect_ratio']
+
+    q_star = get_q_star(inputs['minor_radius'], inputs['major_radius'],
+                        inputs['areal_elongation'], inputs['magnetic_field_on_axis'],
+                        inputs['plasma_current'])
+    
     if 'num_r_points' not in inputs.keys():
         inputs['num_r_points'] = 50
     rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
@@ -552,25 +731,36 @@ def get_all_parameters(inputs):
     output = {'electron_temperature': volumetric_temperatures,
               'electron_density': volumetric_densities,
               'P_fusion': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'P_fusion/A': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'P_radiation': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'P_ohmic': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'P_SOL': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'P_auxillary': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'P_LH_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'energy_confinement_time': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
-              'Q': np.zeros((inputs['num_T_points'], inputs['num_n_points']))}
+              'Q': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'ignition_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'sepOS_density_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'bernert_density_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points']))}
     
     output['greenwald_density'] = get_greenwald_density(inputs['plasma_current'], inputs['minor_radius'])
     output['greenwald_fraction'] = volumetric_densities / output['greenwald_density']
 
+    output['peak_greenwald_density'] = get_peak_greenwald(inputs['plasma_current'], inputs['minor_radius'],
+                                                          inputs['n_edge_factor'], inputs['profile_alpha']['n'])
+    output['peak_greenwald_fraction'] = volumetric_densities / output['peak_greenwald_density']
+
     # Get power balance parameters
     for i,T_e in enumerate(volumetric_temperatures):
-        T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['T'])
+        T_es = get_parabolic_profile(T_e, rs, inputs['minor_radius'], 
+                                     inputs['T_edge'], alpha=inputs['profile_alpha']['T'])
         # T_e_units = T_e.units
         # T_es = np.array([T_e.magnitude]*len(rs)) * T_e_units
         for j,n_e in enumerate(volumetric_densities):
             # n_e_units = n_e.units
             # n_es = np.array([n_e.magnitude]*len(rs)) * n_e_units
-            n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], alpha=inputs['profile_alpha']['n'])
+            n_es = get_parabolic_profile(n_e, rs, inputs['minor_radius'], 
+                                         n_e*inputs['n_edge_factor'] , alpha=inputs['profile_alpha']['n'])
 
             # Calculate powers
             # print(get_p_fusion(n_es, T_es, rs, inputs['areal_elongation'],
@@ -579,6 +769,10 @@ def get_all_parameters(inputs):
             output['P_fusion'][i,j] = get_p_fusion(n_es, T_es, rs, inputs['areal_elongation'],
                                                    inputs['major_radius'], reaction=inputs['reaction'],
                                                    impurities=inputs['impurities']).to(ureg.MW).magnitude
+            output['P_fusion/A'][i,j] = get_P_fusion_per_area(output['P_fusion'][i,j]*ureg.MW,
+                                                              inputs['areal_elongation'],
+                                                              inputs['major_radius'],
+                                                              inputs['minor_radius']).to(ureg.MW/(ureg.meter**2)).magnitude
             output['P_radiation'][i,j] = get_p_bremmstrahlung(n_es, T_es, rs, inputs['areal_elongation'],
                                                               inputs['major_radius'], reaction=inputs['reaction'],
                                                               impurities=inputs['impurities']).to(ureg.MW).magnitude
@@ -589,7 +783,8 @@ def get_all_parameters(inputs):
             energy_confinement_time_guess = 1.0 * ureg.second
 
             tau_E = get_converged_confinement_time( 
-                    lower_bound=1e-5, upper_bound=500,
+                    lower_bound=inputs['confinement']['lower_bound'], 
+                    upper_bound=inputs['confinement']['upper_bound'],
                     n_es=n_es, T_es=T_es, rs=rs,
                     p_fusion=output['P_fusion'][i,j]*ureg.MW, 
                     p_radiation=output['P_radiation'][i,j]*ureg.MW, 
@@ -622,14 +817,46 @@ def get_all_parameters(inputs):
             # Calculate Q_scientific
             output['Q'][i,j] = get_Q_scientific(output['P_fusion'][i,j], output['P_auxillary'][i,j],
                                                 output['P_ohmic'][i,j])
+            # Calculate ignition fraction
+            output['ignition_fraction'][i,j] = get_ignition_fraction(output['P_fusion'][i,j], output['P_radiation'][i,j], output['P_SOL'][i,j])
+
+            # Calculate L-mode to H-mode transition power
+            # output['P_LH_fraction'][i,j] = (output['P_SOL'][i,j]) \
+            #                                 / get_p_LH_transition(n_e, inputs['n_edge_factor'], inputs['profile_alpha']['n'],
+            #                                           inputs['magnetic_field_on_axis'], inputs['major_radius'],
+            #                                           inputs['minor_radius']).to(ureg.MW).magnitude 
+            zeff = get_z_eff(inputs['reaction'], inputs['impurities'])
+
+            output['P_LH_fraction'][i,j] = (output['P_SOL'][i,j]) \
+                                          / get_p_LH_transition_2(n_e, inputs['n_edge_factor'], inputs['profile_alpha']['n'],
+                                                                  inputs['major_radius'], inputs['inverse_aspect_ratio'],
+                                                                  inputs['areal_elongation'], inputs['magnetic_field_on_axis'],
+                                                                  inputs['plasma_current'], zeff,
+                                                                  F_A=None, gamma=0.5)
+            output['sepOS_density_fraction'][i,j] = (n_e / get_SepOS_density_limit(output['P_SOL'][i,j] * ureg.MW,
+                                                                       q_star,
+                                                                       inputs['magnetic_field_on_axis'],
+                                                                       inputs['n_edge_factor']).to(ureg.meter**(-3)) \
+                                                                       ).magnitude
+            output['bernert_density_fraction'][i,j] = (n_e / get_bernert_density_limit(
+                                                                (output['P_fusion'][i,j] + output['P_ohmic'][i,j] + output['P_auxillary'][i,j]) * ureg.MW,
+                                                                inputs['plasma_current'],
+                                                                q_star,
+                                                                inputs['n_edge_factor']).to(ureg.meter**(-3)) \
+                                                                ).magnitude
+            
+            
+            
             # print('\n')
             # break
         # break
     output['P_fusion'] *= ureg.MW
+    output['P_fusion/A'] *= ureg.MW / (ureg.meter**2)
     output['P_radiation'] *= ureg.MW
     output['P_SOL'] *= ureg.MW
     output['P_auxillary'] *= ureg.MW
     output['P_ohmic'] *= ureg.MW
+    # output['P_LH'] *= ureg.MW
     output['energy_confinement_time'] *= ureg.second
     return output
             
@@ -647,6 +874,24 @@ def initialize_plot_inputs(plot_inputs, outputs):
     if 'contours' not in plot_inputs.keys():
         plot_inputs['contours'] = {'P_fusion':{}, 'P_radiation':{}, 'P_ohmic':{}, 'P_SOL':{}, 
                                     'P_auxillary':{}, 'energy_confinement_time':{}, 'Q':{}}
+    if 'legend_label' not in plot_inputs.keys():
+        plot_inputs['legend_label'] = {'P_fusion': '$P_{fusion}$ [MW]',
+                                       'P_fusion/A': '$P_{fusion}/A$ [MW/m${}^2$]',
+                                       'P_radiation': '$P_{rad}$ [MW]',
+                                       'P_ohmic': '$P_{ohmic}$ [MW]',
+                                       'P_SOL': '$P_{SOL}$ [MW]',
+                                       'P_auxillary': '$P_{aux}$ [MW]',
+                                       'P_LH_fraction': '$P_{SOL}/P_{LH}$ [MW]',
+                                       'energy_confinement_time': '$\tau_E$ [s]',
+                                       'Q': '$Q_s$',
+                                       'greenwald_fraction': '$n/n_G$',
+                                       'peak_greenwald_fraction': '$n/n_G$',
+                                       'sepOS_density_fraction': '$n/n_{SepOS}$',
+                                       'bernert_density_fraction': '$n/n_{bernert}$'}
+    if 'plot_ignition' not in plot_inputs.keys():
+        plot_inputs['plot_ignition'] = False
+    if 'title' not in plot_inputs.keys():
+        plot_inputs['title'] = ''
         
     colors = ['black', 'tab:blue', 'tab:orange', 'tab:green','tab:red', 'tab:purple',
               'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
@@ -674,6 +919,8 @@ def initialize_plot_inputs(plot_inputs, outputs):
             plot_inputs['contours'][contour]['alpha'] = 1.0
         if 'label_fmt' not in keys:
             plot_inputs['contours'][contour]['label_fmt'] = '%.1f'
+        if 'linestyles' not in keys:
+            plot_inputs['contours'][contour]['linestyles'] = 'solid'
     
     return plot_inputs
 
@@ -697,8 +944,13 @@ def plot_popcon(outputs, plot_inputs, figsize=[10,8], dpi=150, savename='popcon.
             parameter = np.zeros(outputs['P_fusion'].shape)
             for j in range(len(outputs['electron_density'])):
                 parameter[:,j] = outputs['greenwald_fraction'][j]
+        elif contour.lower()=='peak_greenwald_fraction':
+            parameter = np.zeros(outputs['P_fusion'].shape)
+            for j in range(len(outputs['electron_density'])):
+                parameter[:,j] = outputs['peak_greenwald_fraction'][j]
         else:
             parameter = outputs[contour]
+        # Check if parameter has units, and if so, only use the magnitude
         if len(pint.UnitRegistry.Quantity(parameter).dimensionality) > 0:
             parameter = parameter.magnitude
 
@@ -712,17 +964,29 @@ def plot_popcon(outputs, plot_inputs, figsize=[10,8], dpi=150, savename='popcon.
         conlines = ax.contour(xmesh, ymesh, parameter.transpose(), 
                           levels=plot_inputs['contours'][contour]['levels'],
                           colors=plot_inputs['contours'][contour]['colors'],
-                          alpha=plot_inputs['contours'][contour]['alpha'])
+                          alpha=plot_inputs['contours'][contour]['alpha'],
+                          linestyles=plot_inputs['contours'][contour]['linestyles'])
         ax.clabel(conlines, conlines.levels, inline=True, 
                   fmt=plot_inputs['contours'][contour]['label_fmt'])
         plot_colors += [plot_inputs['contours'][contour]['colors']]
 
+    if plot_inputs['plot_ignition']:
+        cntr = ax.contourf(xmesh, ymesh, outputs['ignition_fraction'].transpose(),
+                           levels=[1.0, 100.0],
+                           cmap='Reds',
+                           alpha=0.5)
     for i,contour in enumerate(plot_inputs['contours'].keys()):
-        ax.plot([-2, -1], [-2, -1], color=plot_colors[i], label=contour)
+        if plot_inputs['contours'][contour]['linestyles'] == 'solid':
+            fmt = '-'
+        elif plot_inputs['contours'][contour]['linestyles'] == 'dashed':
+            fmt = '--'
+        ax.plot([-2, -1], [-2, -1], fmt, color=plot_colors[i], label=plot_inputs['legend_label'][contour])
         ax.set_xlim(outputs['electron_temperature'][0].magnitude, outputs['electron_temperature'][-1].magnitude)
+        ax.set_xlabel('$T_{e0}$', fontsize=12)
         ax.set_ylim(outputs['electron_density'][0].magnitude, outputs['electron_density'][-1].magnitude)
+        ax.set_ylabel('$n_{e0}$', fontsize=12)
         ax.legend()
-    
+    ax.set_title(plot_inputs['title'])
     fig.savefig(plot_inputs['filename'])
 
     return fig, ax
