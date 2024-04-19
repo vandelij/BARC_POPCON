@@ -31,7 +31,7 @@ def get_fusion_reactivity(T_e, reaction='DT'):
 
     return reactivity
 
-def get_s_fusion(n_e, T_e, impurities=None, reaction='DT'):
+def get_s_fusion(n_e, T_e, impurities=None, reaction='DT', f_DT=1.0):
 
     """ Calculates fusion power density for a given fusion reaction
         n_e: float or iterable(float) = electron density in m^-3
@@ -59,7 +59,7 @@ def get_s_fusion(n_e, T_e, impurities=None, reaction='DT'):
         impurity_factor = 1
     
     # Calculate fusion power density
-    s_fusion = E_f[reaction].to(ureg.joule) * 1/4 * n_e.to((ureg.m)**(-3))**2 * impurity_factor**2 * reactivity.to((ureg.m**(3))/ureg.second)
+    s_fusion = E_f[reaction].to(ureg.joule) * 1/4 * (f_DT * (2 - f_DT)) * n_e.to((ureg.m)**(-3))**2 * impurity_factor**2 * reactivity.to((ureg.m**(3))/ureg.second)
 
     s_fusion = s_fusion.to(ureg.MW/(ureg.m**3))
 
@@ -173,9 +173,21 @@ def get_areal_integral(f, n_es, T_es, rs, major_radius, areal_elongation,
     return areal_integral
 
 
-def get_vol_integral(f, n_es, T_es, rs, major_radius, areal_elongation, **kwargs):
+def get_vol_integral(f, n_es, T_es, rs, major_radius, areal_elongation, triangularity=0, **kwargs):
 
     dVs = 2*np.pi * major_radius * areal_elongation * np.pi * (rs[1:]**2 - rs[:-1]**2)
+
+    ## Using plasma volume with triangularity from: 
+    ## A. E. Costley, J. Hugill, and P. F. Buxton, 
+    ## “On the power and size of tokamak fusion pilot plants and reactors,” 
+    ## Nucl. Fusion, vol. 55, no. 3, p. 033001, Mar. 2015, 
+    ## doi: 10.1088/0029-5515/55/3/033001.
+
+    # As = major_radius / rs
+    # dVs = (2 * np.pi**2 * areal_elongation * (As - triangularity) \
+    #        + 16 * np.pi * areal_elongation * triangularity / 3) \
+    #        * rs**3
+
     ds = f(n_es, T_es, **kwargs)
     dfs = (ds[1:] + ds[:-1])/2 * dVs
     vol_integral = dfs.sum()
@@ -194,7 +206,8 @@ def get_vol_integral(f, n_es, T_es, rs, major_radius, areal_elongation, **kwargs
     return vol_integral
 
 
-def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', impurities=None):
+def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', impurities=None,
+                 f_DT=1.0):
 
     # linear_fusion_power = get_areal_integral(get_s_fusion,
     #                                          n_es,
@@ -214,7 +227,8 @@ def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', 
                                 major_radius,
                                 areal_elongation,
                                 reaction=reaction,
-                                impurities=impurities)
+                                impurities=impurities,
+                                f_DT=f_DT)
     # print(p_fusion.units)
     p_fusion = p_fusion.to(ureg.MW)
     
@@ -228,12 +242,29 @@ def get_ellipse_circumference(minor_radius, areal_elongation):
     return circumference
 
 
-def get_torus_surface_area(major_radius, minor_radius, areal_elongation):
+def get_torus_surface_area(major_radius, minor_radius, areal_elongation, triangularity, g=0):
+    """ Calculates surface area of elliptical torus"""
     circumference = get_ellipse_circumference(minor_radius, areal_elongation)
     surface_area = circumference * 2 * np.pi * major_radius
     return surface_area
 
+def get_plasma_surface_area(major_radius, minor_radius, areal_elongation, triangularity, g=0):
+    """ Calculates surface area of elongated, triangulated, toroidal plasma.
+    g is the plasma-wall gap
+    R_c is the radius of the central mechanical structure
 
+    Based on formulas from:
+    A. E. Costley, J. Hugill, and P. F. Buxton, 
+    “On the power and size of tokamak fusion pilot plants and reactors,” 
+    Nucl. Fusion, vol. 55, no. 3, p. 033001, Mar. 2015, 
+    doi: 10.1088/0029-5515/55/3/033001.
+    """
+
+    A = major_radius / minor_radius
+    # Radius of central mechanical structure
+    R_c = ((A-1)/A) * major_radius - g
+    
+# def get_ellipse_circumference2()
 def get_P_fusion_per_area(p_fusion, areal_elongation, major_radius, minor_radius):
     surface_area = get_torus_surface_area(major_radius, minor_radius, areal_elongation)
     return p_fusion/surface_area
@@ -282,6 +313,21 @@ def get_p_loss(n_es, T_es,
     p_loss = p_loss.to(ureg.MW / (ureg.meter**3))
 
     return p_loss
+
+def get_p_total_loss(n_es, T_es, rs, major_radius, areal_elongation,
+                     energy_confinement_time=1.0*ureg.second,
+                     reaction='DT',
+                     impurities=None):
+    p_total_loss = get_vol_integral(get_p_loss,
+                                    n_es,
+                                    T_es,
+                                    rs,
+                                    major_radius,
+                                    areal_elongation,
+                                    energy_confinement_time=energy_confinement_time,
+                                    reaction=reaction,
+                                    impurities=impurities)
+    return p_total_loss
 
 
 def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
