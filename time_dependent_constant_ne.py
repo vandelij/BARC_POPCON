@@ -5,7 +5,7 @@ import pint
 ureg = pint.get_application_registry()
 from matplotlib import pyplot as plt
 
-T_at_0 = 0.1 * ureg.keV
+T_at_0 = 1 * ureg.keV
 n0 = 2.0e20 * ureg.m**(-3)
 
 inputs = {}
