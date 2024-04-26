@@ -157,6 +157,18 @@ def get_p_ohmic_neoclassical(plasma_current, T_e, epsilon, major_radius, areal_e
 
     return p_ohmic
 
+def get_current_density_profile(plasma_current, rs, minor_radius, inverse_aspect_ratio, areal_elongation):
+    # Equation 15.9 in Freidberg's Plasma Physics and Fusion Energy, 2007, ISBN: 978-0-521-73317-5
+    j_0 = plasma_current * 3 / (np.pi * minor_radius**2 * areal_elongation * (1 - 1.31 * inverse_aspect_ratio**(1/2) + 0.46 * inverse_aspect_ratio))
+    # Equation 15.8 in Freidberg's Plasma Physics and Fusion Energy, 2007, ISBN: 978-0-521-73317-5
+    js = j_0 * (1 - (rs/minor_radius)**2)**2 * (1 - inverse_aspect_ratio**(1/2) * (rs/minor_radius)**(1/2))**2
+    return js
+
+def get_s_ohmic_neoclassical(js, T_es):
+    s_ohmic = js**2 * (3.3e-8 * ureg.ohm * ureg.meter) / (T_es.to(ureg.keV).magnitude)**(3/2)
+    return s_ohmic
+
+
 
 def get_areal_integral(f, n_es, T_es, rs, major_radius, areal_elongation,
                       **kwargs):
@@ -206,6 +218,12 @@ def get_vol_integral(f, n_es, T_es, rs, major_radius, areal_elongation, triangul
     return vol_integral
 
 
+def get_p_ohmic_neoclassical_2(plasma_current, rs, T_es, minor_radius, inverse_aspect_ratio, areal_elongation):
+    js = get_current_density_profile(plasma_current, rs, minor_radius, inverse_aspect_ratio, areal_elongation)
+    p_ohmic = get_vol_integral(get_s_ohmic_neoclassical, js, T_es, rs, minor_radius/inverse_aspect_ratio, areal_elongation)
+    return p_ohmic.to(ureg.MW)
+
+
 def get_p_fusion(n_es, T_es, rs, areal_elongation, major_radius, reaction='DT', impurities=None,
                  f_DT=1.0):
 
@@ -242,7 +260,7 @@ def get_ellipse_circumference(minor_radius, areal_elongation):
     return circumference
 
 
-def get_torus_surface_area(major_radius, minor_radius, areal_elongation, triangularity, g=0):
+def get_torus_surface_area(major_radius, minor_radius, areal_elongation, triangularity=0, g=0):
     """ Calculates surface area of elliptical torus"""
     circumference = get_ellipse_circumference(minor_radius, areal_elongation)
     surface_area = circumference * 2 * np.pi * major_radius
@@ -266,7 +284,7 @@ def get_plasma_surface_area(major_radius, minor_radius, areal_elongation, triang
     
 # def get_ellipse_circumference2()
 def get_P_fusion_per_area(p_fusion, areal_elongation, major_radius, minor_radius):
-    surface_area = get_torus_surface_area(major_radius, minor_radius, areal_elongation)
+    surface_area = get_torus_surface_area(major_radius, minor_radius, areal_elongation, triangularity=0)
     return p_fusion/surface_area
 
 
@@ -293,7 +311,7 @@ def get_p_bremmstrahlung(n_es, T_es, rs, areal_elongation, major_radius, reactio
     return p_bremmstrahlung
 
 
-def get_p_loss(n_es, T_es,
+def get_s_loss(n_es, T_es,
               energy_confinement_time=1.0*ureg.second,
               reaction='DT', impurities=None):
     # Calculate total plasma pressure
@@ -314,11 +332,30 @@ def get_p_loss(n_es, T_es,
 
     return p_loss
 
+def get_plasma_energy_density(n_es, T_es, reaction='DT', impurities=None):
+    # Calculate total plasma pressure
+    electron_pressures = n_es * T_es
+    if reaction=='DT'  or reaction=='DD':
+        fusion_reactant_ion_pressures = n_es * T_es
+    
+    impurity_ion_pressures = np.zeros(np.shape(n_es))
+    if impurities:
+        for Z_i, f_i in impurities:
+            impurity_ion_pressures += f_i * electron_pressures
+    total_pressures = electron_pressures + fusion_reactant_ion_pressures + impurity_ion_pressures
+    plasma_energy_density = 3/2 * total_pressures
+    return plasma_energy_density
+
+def get_plasma_energy(n_es, T_es, rs, major_radius, areal_elongation, reaction='DT', impurities=None):
+    plasma_energy = get_vol_integral(get_plasma_energy_density, n_es, T_es, rs,
+                                     major_radius, areal_elongation, reaction=reaction, impurities=impurities)
+    return plasma_energy
+
 def get_p_total_loss(n_es, T_es, rs, major_radius, areal_elongation,
                      energy_confinement_time=1.0*ureg.second,
                      reaction='DT',
                      impurities=None):
-    p_total_loss = get_vol_integral(get_p_loss,
+    p_total_loss = get_vol_integral(get_s_loss,
                                     n_es,
                                     T_es,
                                     rs,
@@ -341,7 +378,7 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
     #                            energy_confinement_time=energy_confinement_time,
     #                            reaction=reaction, impurities=impurities)
     # p_total_loss = p_total_loss_linear * 2 * np.pi * major_radius 
-    p_total_loss = get_vol_integral(get_p_loss,
+    p_total_loss = get_vol_integral(get_s_loss,
                                     n_es,
                                     T_es,
                                     rs,
@@ -736,6 +773,7 @@ def get_q_star(minor_radius, major_radius, areal_elongation, magnetic_field_on_a
     
     q_star = 2 * np.pi * minor_radius**2 * magnetic_field_on_axis * areal_elongation \
            / (mu_0 * major_radius * plasma_current)
+    q_star = q_star.to_reduced_units()
     return q_star
 
 
@@ -824,6 +862,8 @@ def get_all_parameters(inputs):
                                                               impurities=inputs['impurities']).to(ureg.MW).magnitude
             output['P_ohmic'][i,j] = get_p_ohmic_neoclassical(inputs['plasma_current'], T_e, inputs['inverse_aspect_ratio'],
                                                               inputs['major_radius'], inputs['areal_elongation']).to(ureg.MW).magnitude
+            output['P_ohmic'][i,j] = get_p_ohmic_neoclassical_2(inputs['plasma_current'], rs, T_es, inputs['minor_radius'],
+                                                                inputs['inverse_aspect_ratio'], inputs['areal_elongation']).to(ureg.MW).magnitude
             
             ## Iterate to get energy confinement time
             energy_confinement_time_guess = 1.0 * ureg.second
