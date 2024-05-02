@@ -58,8 +58,9 @@ def get_s_fusion(n_e, T_e, impurities=None, reaction='DT', f_DT=1.0):
     else:
         impurity_factor = 1
     
+
     # Calculate fusion power density
-    s_fusion = E_f[reaction].to(ureg.joule) * 1/4 * (f_DT * (2 - f_DT)) * n_e.to((ureg.m)**(-3))**2 * impurity_factor**2 * reactivity.to((ureg.m**(3))/ureg.second)
+    s_fusion = E_f[reaction].to(ureg.joule) * (f_DT/((1 + f_DT)**2)) * n_e.to((ureg.m)**(-3))**2 * impurity_factor**2 * reactivity.to((ureg.m**(3))/ureg.second)
 
     s_fusion = s_fusion.to(ureg.MW/(ureg.m**3))
 
@@ -119,25 +120,34 @@ def get_ln_lambda(T_e, n_e, reaction='DT'):
     return ln_lambda
 
 
-def get_spitzer_resistivity(T_e, n_e, impurities=None, reaction='DT'):
+def get_spitzer_conductance(T_es, n_es, rs, 
+                             major_radius, minor_radius,
+                             areal_elongation,
+                             impurities=None, reaction='DT'):
     ''' Spitzer resisitivity of unmagnitized (or resistivity parallel to B)
         from the MFE Plasma Forulary Section 5.6.1'''
     
-    ln_lambda = get_ln_lambda(T_e, n_e, reaction=reaction)
+    ln_lambda = get_ln_lambda(T_es, n_es, reaction=reaction)
     z_eff = get_z_eff(reaction=reaction, impurities=impurities)
 
-    spitzer_resistivity = ((1.65e-9 * z_eff * ln_lambda) / (T_e.to(ureg.keV))**(3/2)).magnitude
-    spitzer_resistivity = spitzer_resistivity * ureg.ohm * ureg.meter
 
-    return spitzer_resistivity
+    spitzer_conductivities = ((T_es.to(ureg.keV).magnitude)**(3/2)) / (1.65e-9 * z_eff * ln_lambda)
+    conductivity_ave = get_volume_average(rs, spitzer_conductivities, 
+                                          major_radius, minor_radius,
+                                          areal_elongation) * (1 / (ureg.ohm * ureg.m))
+    effective_conductance = conductivity_ave * (areal_elongation * minor_radius**2) / (2 * major_radius)
+    effective_conductance.to(ureg.ohm**(-1))
+    return effective_conductance
 
 
-def get_p_ohmic_classical(T_e, n_e, plasma_current, major_radius, minor_radius, areal_elongation,
+def get_p_ohmic_classical(T_es, n_es, rs, plasma_current, major_radius, minor_radius, areal_elongation,
                           impurities=None, reaction='DT'):
 
-    spitzer_resistivity = get_spitzer_resistivity(T_e, n_e, impurities=impurities, reaction=reaction)
-
-    resistance = spitzer_resistivity * (2 * major_radius / (minor_radius**2 * areal_elongation))
+    conductance = get_spitzer_conductance(T_es, n_es, rs, 
+                                            major_radius, minor_radius,
+                                            areal_elongation,
+                                            impurities=impurities, reaction=reaction)
+    resistance = 1 / conductance
     p_ohmic = resistance * plasma_current**2
     p_ohmic = p_ohmic.to(ureg.MW)
     return p_ohmic
@@ -146,14 +156,14 @@ def get_p_ohmic_classical(T_e, n_e, plasma_current, major_radius, minor_radius, 
 def get_p_ohmic_neoclassical(plasma_current, T_e, epsilon, major_radius, areal_elongation):
     """ Calculated using Equation 15.10 of 
     Freidberg's Plasma Physics and Fusion Energy, 2007, ISBN: 978-0-521-73317-5"""
-    T_k = T_e.to(ureg.keV)
-    R_0 = major_radius.to(ureg.m)
-    I_M = plasma_current.to(ureg.MA)
-    minor_radius = major_radius * epsilon
+    T_k = T_e.to(ureg.keV).magnitude
+    R_0 = major_radius.to(ureg.m).magnitude
+    I_M = plasma_current.to(ureg.MA).magnitude
+    minor_radius = (major_radius * epsilon).magnitude
 
     p_ohmic = ((5.6e-2) / (1 - 1.31 * epsilon**(1/2) + 0.46 * epsilon)) \
             * (R_0 * I_M**2) / (minor_radius**2 * areal_elongation * T_k**(3/2))
-    p_ohmic = (p_ohmic.magnitude) * ureg.MW
+    p_ohmic = (p_ohmic) * ureg.MW
 
     return p_ohmic
 
@@ -319,10 +329,12 @@ def get_s_loss(n_es, T_es,
     if reaction=='DT'  or reaction=='DD':
         fusion_reactant_ion_pressures = n_es * T_es
     
-    impurity_ion_pressures = np.zeros(np.shape(n_es))
+    impurity_ion_pressures = np.zeros(np.shape(n_es)) * electron_pressures.units
     if impurities:
         for Z_i, f_i in impurities:
             impurity_ion_pressures += f_i * electron_pressures
+            if reaction=='DT' or reaction=='DD':
+                fusion_reactant_ion_pressures -= f_i * Z_i * electron_pressures
     total_pressures = electron_pressures + fusion_reactant_ion_pressures + impurity_ion_pressures
 
     p_loss = 3/2 * total_pressures / energy_confinement_time
@@ -706,6 +718,20 @@ def get_peak_greenwald(plasma_current, minor_radius, n_edge_factor, alpha_n):
     # in circular plasma
     n_G_peak = n_G * (alpha_n + 1) / ((alpha_n + 1)*n_edge_factor + (1 - n_edge_factor))
     return n_G_peak
+
+def get_n0_from_n_ave(n_ave, n_edge_factor, alpha_n):
+    n0 = n_ave * ((alpha_n + 1) / ((alpha_n + 1)*n_edge_factor + (1 - n_edge_factor)))
+    return n0
+
+def get_T_ave(T0, T_edge, alpha_T):
+    T_ave = T_edge + (T0 - T_edge)/(alpha_T + 1)
+    return T_ave
+
+
+def get_T0_from_T_ave(T_ave, T_edge, alpha_T):
+    T0 = (T_ave - T_edge) * (alpha_T + 1) + T_edge
+    return T0
+
 
 
 def get_n_ave(n_0, n_edge_factor, alpha_n):
