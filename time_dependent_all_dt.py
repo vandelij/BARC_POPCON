@@ -10,7 +10,9 @@ import matplotlib.patches
 T_at_0 = 1
 n_at_0 = 1e20 # m^(-3)
 
-plot_dWdt_contour = True
+desired_power = 2200 * ureg.MW
+
+plot_dWdt_contour = False
 
 inputs = {}
 kr_frac = 1.8e-3
@@ -54,13 +56,12 @@ inputs['num_n_points'] = 20
 inputs['profile_alpha']['n'] = 1.1
 inputs['n_edge_factor'] = 0.25
 
-inputs['P_aux_0'] = 12 * ureg.MW
+inputs['P_aux_0'] = 15 * ureg.MW
 starting_p_aux_0 = inputs['P_aux_0']
 
 inputs['n0_slope'] = 1e18 * ureg.m**(-3)
 inputs['n0_start'] = 1e20 
 
-inputs['density_ramp_temperature'] = 19.5 * ureg.keV
 
 inputs['minor_radius'] = inputs['major_radius'] * inputs['inverse_aspect_ratio']
 
@@ -70,7 +71,7 @@ inputs['reduce_P_aux'] = False
 
 def get_P_aux(t, P_aux_0, reduce=False):
     if reduce:
-        P_aux = P_aux_0 - 0.2*ureg.MW * t
+        P_aux = P_aux_0 - 0.25*ureg.MW * t
         # P_aux = P_aux_0
         if P_aux < 0:
             P_aux = 0 * ureg.MW
@@ -78,8 +79,13 @@ def get_P_aux(t, P_aux_0, reduce=False):
         P_aux = P_aux_0
     return P_aux
 
-def get_f_DT(t):
-    f_DT = 1.0 + 0.01 * t
+def get_f_DT(t, final_f_DT=1.0):
+    # if t<25:
+    #     f_DT = 1.0 + 0.0402 * t
+    # else:
+    #     f_DT = 1.0 + 0.0402 * 25
+    f_DT = (1.0 - final_f_DT) * np.exp(-t/5) + final_f_DT
+
     return f_DT
 
 
@@ -114,7 +120,7 @@ def get_p_ohmic(n0, T0, inputs):
     return p_ohmic
 
 
-def get_p_fusion(n0, T0, inputs):
+def get_p_fusion(n0, T0, inputs, f_DT=1.0):
     T0 *= ureg.keV
     n0 *= ureg.m**(-3)
     rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
@@ -126,8 +132,26 @@ def get_p_fusion(n0, T0, inputs):
                                       alpha=inputs['profile_alpha']['n'])
     p_fusion = popcon.get_p_fusion(ns, Ts, rs, inputs['areal_elongation'],
                                    inputs['major_radius'], reaction=inputs['reaction'],
-                                   impurities=inputs['impurities'])
+                                   impurities=inputs['impurities'], f_DT=f_DT)
     return p_fusion.to(ureg.MW)
+
+
+def get_p_fusion_root(f_DT, n0, T0, inputs, desired_power):
+    T0 *= ureg.keV
+    n0 *= ureg.m**(-3)
+    rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
+    Ts = popcon.get_parabolic_profile(T0, rs, inputs['minor_radius'],
+                                      inputs['T_edge'],
+                                      alpha=inputs['profile_alpha']['T'])
+    ns = popcon.get_parabolic_profile(n0, rs, inputs['minor_radius'],
+                                      inputs['n_edge_factor']*n0,
+                                      alpha=inputs['profile_alpha']['n'])
+    p_fusion = popcon.get_p_fusion(ns, Ts, rs, inputs['areal_elongation'],
+                                   inputs['major_radius'], reaction=inputs['reaction'],
+                                   impurities=inputs['impurities'], f_DT=f_DT)
+    root = p_fusion.to(ureg.MW).magnitude - desired_power.to(ureg.MW).magnitude
+    return root
+
 
 def get_p_LH(n0, inputs):
     rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
@@ -144,7 +168,7 @@ def get_p_LH(n0, inputs):
     return p_LH.to(ureg.MW)
 
 
-def get_dWdt(t, T0, inputs, n0, f_DT=1):
+def get_dWdt(n0, t, T0, inputs, f_DT=1.0):
     T0 *= ureg.keV
     n0 *= ureg.m**(-3)
     rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
@@ -168,11 +192,10 @@ def get_dWdt(t, T0, inputs, n0, f_DT=1):
     # print('T_ave = {}'.format(T_ave))
     # print('T_line_ave = {}'.format(T_line_ave))
     V_plasma = 2 * np.pi**2 * inputs['major_radius'] * inputs['minor_radius']**2 * inputs['areal_elongation']
-
     
     p_fusion = popcon.get_p_fusion(ns, Ts, rs, inputs['areal_elongation'],
-                                   inputs['major_radius'], reaction=inputs['reaction'],
-                                   impurities=inputs['impurities'], f_DT=f_DT)
+                                inputs['major_radius'], reaction=inputs['reaction'],
+                                impurities=inputs['impurities'], f_DT=f_DT)
 
     p_alpha = 0.2013 * p_fusion
     
@@ -226,9 +249,91 @@ def get_dWdt(t, T0, inputs, n0, f_DT=1):
 
     return dWdt, ignition_fraction, tau_E.to(ureg.s), p_SOL.to(ureg.MW)
 
+def get_dWdt_root(n0, t, T0, inputs, f_DT=1.0, p_fusion=None):
+    T0 *= ureg.keV
+    n0 *= ureg.m**(-3)
+    rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
+    Ts = popcon.get_parabolic_profile(T0, rs, inputs['minor_radius'],
+                                      inputs['T_edge'],
+                                      alpha=inputs['profile_alpha']['T'])
+    T_ave = popcon.get_volume_average(rs, Ts, inputs['major_radius'], 
+                                  inputs['minor_radius'], inputs['areal_elongation']).to(ureg.keV)
+    T_line_ave = np.mean(Ts)
+    n_ave = popcon.get_n_ave(n0, inputs['n_edge_factor'], inputs['profile_alpha']['n'])
+
+    ns = popcon.get_parabolic_profile(n0, rs, inputs['minor_radius'],
+                                      inputs['n_edge_factor']*n0,
+                                      alpha=inputs['profile_alpha']['n'])
+    n_line_ave = np.mean(ns)
+
+    # print('n0={}'.format(n0))
+    # print('n_ave = {}'.format(n_ave))
+    # print('n_line_ave = {}\n'.format(n_line_ave))
+    # print('T0={}'.format(T0))
+    # print('T_ave = {}'.format(T_ave))
+    # print('T_line_ave = {}'.format(T_line_ave))
+    V_plasma = 2 * np.pi**2 * inputs['major_radius'] * inputs['minor_radius']**2 * inputs['areal_elongation']
+    
+    if not p_fusion:
+        p_fusion = popcon.get_p_fusion(ns, Ts, rs, inputs['areal_elongation'],
+                                    inputs['major_radius'], reaction=inputs['reaction'],
+                                    impurities=inputs['impurities'], f_DT=f_DT)
+
+    p_alpha = 0.2013 * p_fusion
+    
+    p_brem = popcon.get_p_bremmstrahlung(ns, Ts, rs, inputs['areal_elongation'],
+                                   inputs['major_radius'], reaction=inputs['reaction'],
+                                   impurities=inputs['impurities'])
+    
+    p_aux = get_P_aux(t, inputs['P_aux_0'], reduce=inputs['reduce_P_aux'])
+
+    # p_ohmic = popcon.get_p_ohmic_neoclassical(inputs['plasma_current'], T_line_ave, inputs['inverse_aspect_ratio'],
+    #                                           inputs['major_radius'], inputs['areal_elongation'])
+    p_ohmic = popcon.get_p_ohmic_classical(Ts, ns, rs, inputs['plasma_current'],
+                                           inputs['major_radius'], inputs['minor_radius'],
+                                           inputs['areal_elongation'], reaction=inputs['reaction'],
+                                           impurities=inputs['impurities'])
+    
+    # p_ohmic = 0 * ureg.MW
+    
+    p_heating = p_alpha + p_aux + p_ohmic
+    # print('n0={}, T0={}'.format(n0, T0))
+
+    # print('p_ohmic = {}'.format(p_ohmic.to(ureg.MW)))
+
+    # print('p_heating = {}'.format(p_heating))
+
+    tau_E = popcon.get_energy_confinement_time(method=inputs['confinement']['scaling'],
+                                               p_external=p_heating,
+                                               plasma_current=inputs['plasma_current'],
+                                               major_radius=inputs['major_radius'],
+                                               minor_radius=inputs['minor_radius'],
+                                               kappa=inputs['areal_elongation'],
+                                               density=n_line_ave,
+                                               magnetic_field_on_axis=inputs['magnetic_field_on_axis'],
+                                               H=inputs['confinement']['H'],
+                                               A=2.5)
+    # p_loss = 3 * 1.11 * n_ave * T_ave * V_plasma / tau_E
+    p_loss = popcon.get_p_total_loss(ns, Ts, rs, inputs['major_radius'],
+                                     inputs['areal_elongation'], 
+                                     energy_confinement_time=tau_E, 
+                                     reaction=inputs['reaction'],
+                                     impurities=inputs['impurities'])
+    # print('p_loss = {}'.format(p_loss.to(ureg.MW)))
+
+    ignition_fraction = (p_alpha / p_loss).magnitude
+
+    p_SOL = p_loss - p_brem
+
+    dWdt = p_heating - p_loss
+
+    dWdt = dWdt.to(ureg.MW)
+
+    return dWdt.magnitude
+
 
 def get_dndt(t, n0, inputs, T0, dTdt=0*ureg.keV/ureg.s):
-    dWdt, *_ = get_dWdt(t, T0, inputs, n0)
+    dWdt, *_ = get_dWdt(n0, t, T0, inputs)
     n_ave = popcon.get_n_ave(n0*ureg.m**(-3), inputs['n_edge_factor'], inputs['profile_alpha']['n'])
     T_ave = popcon.get_T_ave(T0*ureg.keV, inputs['T_edge'], inputs['profile_alpha']['T'])
 
@@ -242,12 +347,12 @@ def get_dndt(t, n0, inputs, T0, dTdt=0*ureg.keV/ureg.s):
     return dndt.magnitude
 
 
-def get_dTdt(t, T0, inputs, n0, dndt=0*ureg.m**(-3)/ureg.s, change_DT=False):
+def get_dTdt(t, T0, inputs, n0, dndt=0*ureg.m**(-3)/ureg.s, change_DT=False, final_f_DT=1.0):
     if change_DT:
-        f_DT = get_f_DT(t)
+        f_DT = get_f_DT(t, final_f_DT=final_f_DT)
     else:
         f_DT = 1.0
-    dWdt, *_ = get_dWdt(t, T0, inputs, n0, f_DT=f_DT)
+    dWdt, *_ = get_dWdt(n0, t, T0, inputs, f_DT=f_DT)
     n_ave = popcon.get_n_ave(n0*ureg.m**(-3), inputs['n_edge_factor'], inputs['profile_alpha']['n'])
     T_ave = popcon.get_T_ave(T0*ureg.keV, inputs['T_edge'], inputs['profile_alpha']['T'])
 
@@ -292,7 +397,7 @@ p_LHs_T = np.zeros(Ts.shape)
 
 for i,t_i in enumerate(sol_T.t):
     dTdts[i] = get_dTdt(t_i, Ts[i].magnitude, inputs, n_at_0)
-    dWdt_T, ign_frac_T, _, p_SOL_T = get_dWdt(t_i, Ts[i].magnitude, inputs, n_at_0)
+    dWdt_T, ign_frac_T, _, p_SOL_T = get_dWdt(n_at_0, t_i, Ts[i].magnitude, inputs)
     dWdts_T[i] = dWdt_T.magnitude
     ignition_fracs_T[i] = ign_frac_T
     p_ohmics_T[i] = get_p_ohmic(n_at_0, Ts[i].magnitude, inputs).to(ureg.MW).magnitude
@@ -322,19 +427,19 @@ ax_T[1,1].set_title('$P_{fusion} / P_{loss}$')
 
 fig_T.suptitle('Leg 1: n0={:.3e} $1/m^3$, P_aux={} MW'.format(n_at_0, starting_p_aux_0.magnitude))
 fig_T.tight_layout()
-fig_T.savefig('leg_1_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
+fig_T.savefig('leg_1_DT_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
 
 ############ Leg 2: Density ramp up #######################
-T_change = 15 #keV
+T_change = 17 #keV
 T_change_ind = np.argmin(np.abs(Ts - T_change*ureg.keV))
 inputs['reduce_P_aux'] = True
 
 sol_n = scipy.integrate.solve_ivp(get_dndt, 
-                                [0, 200], 
+                                [0, 70], 
                                 np.array([n_at_0]),
                                 args=(inputs, T_change),
                                 method='RK45',
-                                t_eval=np.linspace(0, 200, 800))
+                                t_eval=np.linspace(0, 70, 70 * 4))
 
 ns = sol_n.y.squeeze() * ureg.m**(-3)
 print(sol_n)
@@ -357,7 +462,7 @@ p_LHs_n = np.zeros(ns.shape)
 
 for i,t_i in enumerate(sol_n.t):
     dndts[i] = get_dndt(t_i, ns[i].magnitude, inputs, T_change)
-    dWdt_n, ign_frac_n, tau_E, p_SOL_n = get_dWdt(t_i, T_change, inputs, ns[i].magnitude)
+    dWdt_n, ign_frac_n, tau_E, p_SOL_n = get_dWdt(ns[i].magnitude, t_i, T_change, inputs)
     dWdts_n[i] = dWdt_n.magnitude
     ignition_fracs_n[i] = ign_frac_n
     pumping_rates[i] = (ns[i] / tau_E).to(ureg.m**(-3)/ureg.s).magnitude
@@ -390,31 +495,43 @@ ax_n[1,1].set_title('$P_{fusion} / P_{loss}$')
 
 fig_n.suptitle('Leg 2: T0={} keV'.format(T_change))
 fig_n.tight_layout()
-fig_n.savefig('leg_2_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
+fig_n.savefig('leg_2_DT_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
 
 
 #######   Leg 3: Controlling DT ratio and seeing temperature effect ########
 inputs['reduce_P_aux'] = False
 inputs['P_aux_0'] = 0 * ureg.MW
-change_DT = False
+change_DT = True
+
+# Find density to achieve desired power where dW/dt = 0, where fusion power is just the input desired power at the T_change temperature
+final_density = scipy.optimize.toms748(get_dWdt_root, 1e20, 1e21, args=([0], T_change, inputs, 1.0, desired_power))
+print('final n0 = {:.3e} m^(-3)'.format(final_density))
+
+# Now use that density to find the f_DT fraction needed to achieve the desired power at the T_change temperature
+final_f_DT = scipy.optimize.toms748(get_p_fusion_root, 1.0, 3.0, args=(final_density, T_change, inputs, desired_power))
+print('final f_DT = {:.3f}'.format(final_f_DT))
 
 # Use the density at which ignition is approximately achieved
-ign_ind = np.argmin(np.abs(ignition_fracs_n - 0.994))
-print(ign_ind)
-n_2 = ns[ign_ind].magnitude
+# n_2_ind = np.argmin(np.abs(ignition_fracs_n - 1.04))
+
+# print(n_2_ind)
+# n_2 = ns[n_2_ind].magnitude
+n_2_ind = np.argmin(np.abs(ns.magnitude - final_density))
+print(n_2_ind)
+n_2 = final_density
 
 sol_T3 = scipy.integrate.solve_ivp(get_dTdt, 
-                                [0, 200], 
+                                [0, 500], 
                                 np.array([T_change]),
-                                args=(inputs,n_2, 0*ureg.m**(-3)/ureg.s, change_DT),
+                                args=(inputs,n_2, 0*ureg.m**(-3)/ureg.s, change_DT, final_f_DT),
                                 method='RK45',
-                                t_eval=np.linspace(0, 200, 400))
+                                t_eval=np.linspace(0, 500, 1000))
 
 Ts3 = sol_T3.y.squeeze() * ureg.keV
 print(sol_T3)
 
 # print(sol.y)
-fig_T3, ax_T3= plt.subplots(nrows=2, ncols=2, figsize=[10, 6])
+fig_T3, ax_T3= plt.subplots(nrows=3, ncols=2, figsize=[10, 6])
 ax_T3[1,0].plot(sol_T3.t, Ts3)
 ax_T3[1,0].set_xlabel('Time [s]')
 ax_T3[1,0].set_ylabel('T0 [keV]')
@@ -431,12 +548,12 @@ p_LHs_T3 = np.zeros(Ts3.shape)
 
 
 for i,t_i in enumerate(sol_T3.t):
-    dTdts3[i] = get_dTdt(t_i, Ts3[i].magnitude, inputs, n_2)
-    dWdt_T, ign_frac_T, _, p_SOL_T= get_dWdt(t_i, Ts3[i].magnitude, inputs, n_2)
+    dTdts3[i] = get_dTdt(t_i, Ts3[i].magnitude, inputs, n_2, change_DT=True, final_f_DT=final_f_DT)
+    dWdt_T, ign_frac_T, _, p_SOL_T= get_dWdt(n_2, t_i, Ts3[i].magnitude, inputs, f_DT=get_f_DT(t_i, final_f_DT))
     dWdts_T3[i] = dWdt_T.magnitude
     ignition_fracs_T3[i] = ign_frac_T
     p_ohmics_T3[i] = get_p_ohmic(n_2, Ts3[i].magnitude, inputs).to(ureg.MW).magnitude
-    p_fusions_T3[i] = get_p_fusion(n_2, Ts3[i].magnitude, inputs).to(ureg.MW).magnitude
+    p_fusions_T3[i] = get_p_fusion(n_2, Ts3[i].magnitude, inputs, f_DT=get_f_DT(t_i, final_f_DT)).to(ureg.MW).magnitude
     p_SOLs_T3[i] = p_SOL_T.magnitude
     p_LHs_T3[i] = get_p_LH(n_2, inputs).magnitude
 
@@ -461,9 +578,16 @@ ax_T3[1,1].set_ylabel('Ignition Fraction')
 ax_T3[1,1].grid()
 ax_T3[1,1].set_title('$P_{fusion} / P_{loss}$')
 
+ax_T3[2,0].plot(sol_T3.t, get_f_DT(sol_T3.t, final_f_DT=final_f_DT))
+ax_T3[2,0].set_xlabel('Time [s]')
+ax_T3[2,0].set_ylabel('$n_D/n_T$')
+ax_T3[2,0].grid()
+ax_T3[2,0].set_title('$f_{DT}$')
+
+
 fig_T3.suptitle('Leg 3, n0={:.3e} $1/m^3$, Final P_fusion={:.0f} MW'.format(n_2, p_fusions_T3[-1]))
 fig_T3.tight_layout()
-fig_T3.savefig('leg_3_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
+fig_T3.savefig('leg_3_DT_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
 
 
 
@@ -472,7 +596,7 @@ fig_T3.savefig('leg_3_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnit
 line_color = 'blue'
 lw = 1.5
 
-def add_title(ax, title, colors=['black'], y_frac=[0.8, 0.4, 0.1]):
+def add_title(ax, title, colors=['black'], y_frac=[0.6, 0.4, 0.1]):
     if not isinstance(title, list):
         title = [title]
     for i,title_i in enumerate(title):
@@ -489,79 +613,90 @@ def add_title(ax, title, colors=['black'], y_frac=[0.8, 0.4, 0.1]):
     return
 
 
-fig_all, ax_all = plt.subplots(nrows=6, ncols=1, figsize=[5, 8])
+fig_all, ax_all = plt.subplots(nrows=4, ncols=2, figsize=[10, 6])
 t1_end = sol_T.t[T_change_ind]
-t2_end = sol_n.t[ign_ind] + t1_end
+t2_end = sol_n.t[n_2_ind] + t1_end
 ts_all = np.concatenate((sol_T.t[:T_change_ind], 
-                         sol_n.t[:ign_ind]+t1_end, 
+                         sol_n.t[:n_2_ind]+t1_end, 
                          sol_T3.t + t2_end))
 Ts_all = np.concatenate((Ts[:T_change_ind], 
-                         T_change*ureg.keV*np.ones(ns[:ign_ind].shape), 
+                         T_change*ureg.keV*np.ones(ns[:n_2_ind].shape), 
                          Ts3))
 ns_all = np.concatenate((n_at_0*ureg.m**(-3)*np.ones(Ts[:T_change_ind].shape), 
-                         ns[:ign_ind], 
+                         ns[:n_2_ind], 
                          n_2*ureg.m**(-3)*np.ones(Ts3.shape)))
 
-p_auxs_leg_2 = np.zeros(sol_n.t[:ign_ind].shape)
-for i, t_i in enumerate(sol_n.t[:ign_ind]):
+p_auxs_leg_2 = np.zeros(sol_n.t[:n_2_ind].shape)
+for i, t_i in enumerate(sol_n.t[:n_2_ind]):
     p_auxs_leg_2[i] = get_P_aux(t_i, starting_p_aux_0, reduce=True).magnitude
 
 p_auxs_all = np.concatenate((starting_p_aux_0.magnitude * np.ones(Ts[:T_change_ind].shape),
                              p_auxs_leg_2,
                              np.zeros(Ts3.shape)))
 ignition_fracs_all = np.concatenate((ignition_fracs_T[:T_change_ind], 
-                                     ignition_fracs_n[:ign_ind],
+                                     ignition_fracs_n[:n_2_ind],
                                      ignition_fracs_T3))
 p_fusions_all = np.concatenate((p_fusions_T[:T_change_ind],
-                                p_fusions_n[:ign_ind],
+                                p_fusions_n[:n_2_ind],
                                 p_fusions_T3))
 p_SOLs_all = np.concatenate((p_SOLs_T[:T_change_ind],
-                             p_SOLs_n[:ign_ind],
+                             p_SOLs_n[:n_2_ind],
                              p_SOLs_T3))
 p_LHs_all = np.concatenate((p_LHs_T[:T_change_ind],
-                             p_LHs_n[:ign_ind],
+                             p_LHs_n[:n_2_ind],
                              p_LHs_T3))
+f_DTs_all = np.concatenate((np.ones(Ts[:T_change_ind].shape),
+                             np.ones(ns[:n_2_ind].shape),
+                             get_f_DT(sol_T3.t, final_f_DT=final_f_DT)))
 
-ax_all[0].plot(ts_all, Ts_all, color=line_color, linewidth=lw)
-ax_all[0].set_ylabel('[keV]')
-add_title(ax_all[0], 'T0', colors=[line_color])
+ax_all[0,0].plot(ts_all, Ts_all, color=line_color, linewidth=lw)
+ax_all[0,0].set_ylabel('[keV]')
+add_title(ax_all[0,0], 'T0', colors=[line_color])
 
-ax_all[1].plot(ts_all, ns_all/(1e20), color=line_color, linewidth=lw)
-ax_all[1].set_ylabel('[$10^{20} m^{-3}$]')
-add_title(ax_all[1], 'n0', colors=[line_color])
+ax_all[1,0].plot(ts_all, ns_all/(1e20), color=line_color, linewidth=lw)
+ax_all[1,0].set_ylabel('[$10^{20} m^{-3}$]')
+add_title(ax_all[1,0], 'n0', colors=[line_color])
 
-ax_all[2].plot(ts_all, p_auxs_all, color=line_color, linewidth=lw)
-ax_all[2].set_ylabel('[MW]')
-add_title(ax_all[2],'RF Power', colors=[line_color])
+ax_all[2,0].plot(ts_all, p_auxs_all, color=line_color, linewidth=lw)
+ax_all[2,0].set_ylabel('[MW]')
+add_title(ax_all[2,0],'RF Power', colors=[line_color])
 
-ax_all[3].plot(ts_all, p_fusions_all, color=line_color, linewidth=lw)
-ax_all[3].set_ylabel('[MW]')
-add_title(ax_all[3],'Fusion Power', colors=[line_color])
+ax_all[3,0].plot(ts_all, f_DTs_all, color=line_color, linewidth=lw)
+ax_all[3,0].set_ylabel('$n_D/n_T$')
+add_title(ax_all[3,0], 'D:T Ratio', colors=[line_color])
 
-ax_all[4].plot(ts_all, p_SOLs_all, color=line_color, linewidth=lw)
-ax_all[4].plot(ts_all, p_LHs_all, color='red', linewidth=lw)
-ax_all[4].set_ylabel('[MW]')
-add_title(ax_all[4],['P_SOL', 'P_LH'], colors=[line_color, 'red'],
+ax_all[0,1].plot(ts_all, p_fusions_all, color=line_color, linewidth=lw)
+ax_all[0,1].set_ylabel('[MW]')
+add_title(ax_all[0,1],'Fusion Power', colors=[line_color])
+
+ax_all[1,1].plot(ts_all, p_SOLs_all, color=line_color, linewidth=lw)
+ax_all[1,1].plot(ts_all, p_LHs_all, color='red', linewidth=lw)
+ax_all[1,1].set_ylabel('[MW]')
+add_title(ax_all[1,1],['P_SOL', 'P_LH'], colors=[line_color, 'red'],
           y_frac=[0.4, 0.7])
 
-ax_all[5].plot(ts_all, ignition_fracs_all, color=line_color, linewidth=lw)
-ax_all[5].set_xlabel('Time [s]')
-ax_all[5].set_ylabel('$P_{fusion} / P_{loss}$')
-add_title(ax_all[5], 'Ignition Fraction', colors=[line_color])
+ax_all[2,1].plot(ts_all, ignition_fracs_all, color=line_color, linewidth=lw)
+ax_all[2,1].set_ylabel('$P_{fusion} / P_{loss}$')
+add_title(ax_all[2,1], 'Ignition Fraction', colors=[line_color])
 
 for i,a in enumerate(ax_all.flatten()):
-    a.grid()
-    bottom, top = a.get_ylim()
-    a.plot([t1_end]*2, [bottom, top], '--k', linewidth=1.0)
-    a.plot([t2_end]*2, [bottom, top], '--k', linewidth=1.0)
-    a.set_ylim(bottom, top)
-    if i<(len(ax_all.flatten())-1):
-        a.get_xaxis().set_ticklabels([])
-
+    if i==len(ax_all.flatten())-1:
+        a.axis('off')
+    else:
+        a.grid()
+        bottom, top = a.get_ylim()
+        a.plot([t1_end]*2, [bottom, top], '--k', linewidth=1.0)
+        a.plot([t2_end]*2, [bottom, top], '--k', linewidth=1.0)
+        a.set_ylim(bottom, top)
+        if i>=5:
+            a.set_xlabel('Time [s]')
+        else:
+            a.get_xaxis().set_ticklabels([])
 
 
 fig_all.tight_layout()
-fig_all.savefig('all_legs_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
+plt.subplots_adjust(hspace=0.1)
+fig_all.savefig('all_legs_DT_Ip={}MA_a_n={}.png'.format(inputs['plasma_current'].magnitude, inputs['profile_alpha']['n']))
 
 
 
@@ -577,7 +712,7 @@ if plot_dWdt_contour:
     # temp = 7
     for j, n_i in enumerate(ns2):
         for i,T_i in enumerate(Ts2):
-            dWdt2_ij, *_ = get_dWdt(0, T_i, inputs, n_i)
+            dWdt2_ij, *_ = get_dWdt(n_i, 0, T_i, inputs)
             dWdts2[i,j] = dWdt2_ij.magnitude
             # dndts_i = get_dndt(0, n_i, inputs, T_i)
             # dndts2[i,j] = dndts_i
