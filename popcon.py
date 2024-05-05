@@ -116,6 +116,7 @@ def get_ln_lambda(T_e, n_e, reaction='DT'):
 
         Lambda = 12 * np.pi * epsilon_0**(3/2) * (T_e.to(ureg.joule))**(3/2) / \
                 ((n_e.to(ureg.meter**(-3)))**(1/2) * e**3)
+        # print(Lambda)
         ln_lambda = (np.log(Lambda)).magnitude
     return ln_lambda
 
@@ -131,7 +132,7 @@ def get_spitzer_conductance(T_es, n_es, rs,
     z_eff = get_z_eff(reaction=reaction, impurities=impurities)
 
 
-    spitzer_conductivities = ((T_es.to(ureg.keV).magnitude)**(3/2)) / (1.65e-9 * z_eff * ln_lambda)
+    spitzer_conductivities = ((T_es.to(ureg.keV).magnitude)**(3/2)) / (1.65e-9  * z_eff *  ln_lambda)
     conductivity_ave = get_volume_average(rs, spitzer_conductivities, 
                                           major_radius, minor_radius,
                                           areal_elongation) * (1 / (ureg.ohm * ureg.m))
@@ -321,6 +322,20 @@ def get_p_bremmstrahlung(n_es, T_es, rs, areal_elongation, major_radius, reactio
     return p_bremmstrahlung
 
 
+def get_total_pressure_factor(reaction='DT', impurities=None):
+    electron_pressure_factor = 1
+    if reaction=='DT' or reaction=='DD':
+        fusion_ion_pressure_factor = 1
+    impurity_ion_pressure_factor = 0
+    if impurities:
+        for Z_i, f_i in impurities:
+            impurity_ion_pressure_factor += f_i
+            if reaction=='DT' or reaction=='DD':
+                fusion_ion_pressure_factor -= f_i * Z_i
+    total_pressure_factor = electron_pressure_factor + fusion_ion_pressure_factor + impurity_ion_pressure_factor
+    return total_pressure_factor
+
+
 def get_s_loss(n_es, T_es,
               energy_confinement_time=1.0*ureg.second,
               reaction='DT', impurities=None):
@@ -343,6 +358,7 @@ def get_s_loss(n_es, T_es,
     p_loss = p_loss.to(ureg.MW / (ureg.meter**3))
 
     return p_loss
+
 
 def get_plasma_energy_density(n_es, T_es, reaction='DT', impurities=None):
     # Calculate total plasma pressure
@@ -741,8 +757,7 @@ def get_n_ave(n_0, n_edge_factor, alpha_n):
     return n_ave
 
 
-def get_p_LH_transition(n_0, n_edge_factor, alpha_n, magnetic_field_on_axis, major_radius, minor_radius):
-    n_ave = get_n_ave(n_0, n_edge_factor, alpha_n)
+def get_p_LH_transition(n_ave, magnetic_field_on_axis, major_radius, minor_radius):
 
     p_LH = 1.38 * ureg.MW \
            * (n_ave.to(ureg.meter**(-3)).magnitude / 1e20)**0.77 \
@@ -788,6 +803,18 @@ def get_p_LH_transition_2(n_e0, n_edge_factor, alpha_n, major_radius, inverse_as
     return P_LH
 
 
+def get_p_LH_transition_3(n_ave, magnetic_field_on_axis, major_radius, minor_radius, areal_elongation,
+                          reaction='DT', impurities=None):
+
+    surface_area = (2 * np.pi * major_radius) * (2 * np.pi * minor_radius) * np.sqrt((1 + areal_elongation**2)/2)
+    n20 = n_ave.to(ureg.m**(-3)).magnitude / (1e20)
+    B_0 = magnetic_field_on_axis.to(ureg.tesla).magnitude
+    S = surface_area.to(ureg.m**2).magnitude
+    zeff = get_z_eff(reaction=reaction, impurities=impurities)
+
+    p_LH = 0.0488 * n20**0.717 * B_0**0.803 * S**0.941 * zeff**0.7 *  ureg.MW
+
+    return p_LH
 
 
 
@@ -886,10 +913,12 @@ def get_all_parameters(inputs):
             output['P_radiation'][i,j] = get_p_bremmstrahlung(n_es, T_es, rs, inputs['areal_elongation'],
                                                               inputs['major_radius'], reaction=inputs['reaction'],
                                                               impurities=inputs['impurities']).to(ureg.MW).magnitude
-            output['P_ohmic'][i,j] = get_p_ohmic_neoclassical(inputs['plasma_current'], T_e, inputs['inverse_aspect_ratio'],
-                                                              inputs['major_radius'], inputs['areal_elongation']).to(ureg.MW).magnitude
-            output['P_ohmic'][i,j] = get_p_ohmic_neoclassical_2(inputs['plasma_current'], rs, T_es, inputs['minor_radius'],
-                                                                inputs['inverse_aspect_ratio'], inputs['areal_elongation']).to(ureg.MW).magnitude
+            output['P_ohmic'][i,j] = get_p_ohmic_classical(T_es, n_es, rs, inputs['plasma_current'], inputs['major_radius'], inputs['minor_radius'],
+                                                            inputs['areal_elongation'], 
+                                                            impurities=inputs['impurities'],
+                                                            reaction=inputs['reaction']).to(ureg.MW).magnitude
+            # output['P_ohmic'][i,j] = get_p_ohmic_neoclassical_2(inputs['plasma_current'], rs, T_es, inputs['minor_radius'],
+            #                                                     inputs['inverse_aspect_ratio'], inputs['areal_elongation']).to(ureg.MW).magnitude
             
             ## Iterate to get energy confinement time
             energy_confinement_time_guess = 1.0 * ureg.second
@@ -939,12 +968,17 @@ def get_all_parameters(inputs):
             #                                           inputs['minor_radius']).to(ureg.MW).magnitude 
             zeff = get_z_eff(inputs['reaction'], inputs['impurities'])
 
+            # output['P_LH_fraction'][i,j] = (output['P_SOL'][i,j]) \
+            #                               / get_p_LH_transition_2(n_e, inputs['n_edge_factor'], inputs['profile_alpha']['n'],
+            #                                                       inputs['major_radius'], inputs['inverse_aspect_ratio'],
+            #                                                       inputs['areal_elongation'], inputs['magnetic_field_on_axis'],
+            #                                                       inputs['plasma_current'], zeff,
+            #                                                       F_A=None, gamma=0.5)
             output['P_LH_fraction'][i,j] = (output['P_SOL'][i,j]) \
-                                          / get_p_LH_transition_2(n_e, inputs['n_edge_factor'], inputs['profile_alpha']['n'],
-                                                                  inputs['major_radius'], inputs['inverse_aspect_ratio'],
-                                                                  inputs['areal_elongation'], inputs['magnetic_field_on_axis'],
-                                                                  inputs['plasma_current'], zeff,
-                                                                  F_A=None, gamma=0.5)
+                                            / get_p_LH_transition_3(np.mean(n_es), inputs['magnetic_field_on_axis'],
+                                                                    inputs['major_radius'], inputs['minor_radius'],
+                                                                    inputs['areal_elongation'],
+                                                                    reaction=inputs['reaction'], impurities=inputs['impurities']).to(ureg.MW).magnitude
             output['sepOS_density_fraction'][i,j] = (n_e / get_SepOS_density_limit(output['P_SOL'][i,j] * ureg.MW,
                                                                        q_star,
                                                                        inputs['magnetic_field_on_axis'],
