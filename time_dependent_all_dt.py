@@ -13,14 +13,14 @@ import imageio
 T_at_0 = 1
 n_at_0 = 1e20 # m^(-3)
 
-desired_power = 2150 * ureg.MW
+desired_power = 2175 * ureg.MW
 
 # Exponential decay time constant for DT ratio evolution
-tau_DT = {2:1000, 3:1000}
+tau_DT = {2:10000, 3:7}
 
 
 T_change = 16 #keV
-final_T = 18
+final_T = 17.9
 
 plot_dWdt_contour = False
 
@@ -70,7 +70,7 @@ inputs['num_n_points'] = 30
 inputs['profile_alpha']['n'] = 1.5
 inputs['n_edge_factor'] = 0.4
 
-inputs['P_aux_0'] = 45 * ureg.MW
+inputs['P_aux_0'] = 20 * ureg.MW
 starting_p_aux_0 = inputs['P_aux_0']
 
 inputs['n0_slope'] = 1e18 * ureg.m**(-3)
@@ -89,7 +89,14 @@ inputs['reduce_P_aux'] = False
 
 def get_P_aux(t, P_aux_0, reduce=False):
     if reduce:
-        P_aux = P_aux_0 - 1*ureg.MW * t
+        first_slope = (P_aux_0 - 3/4 * P_aux_0) / 22
+        second_slope = 3/4 * P_aux_0 / 15
+        if t < 22:
+            P_aux = P_aux_0 - first_slope * t
+        elif t>=22 and t<40:
+            P_aux = P_aux_0 - first_slope * 22
+        else:
+            P_aux = P_aux_0 - first_slope * 22 - second_slope * (t - 40)
         # P_aux = P_aux_0
         if P_aux < 0:
             P_aux = 0 * ureg.MW
@@ -213,6 +220,9 @@ def get_p_LH(n0, inputs):
 
 
 def get_powers(n0, t, T0, inputs, p_fusion=None):
+    if T0 < 0:
+        print('t=', t)
+        print('T0=', T0)
     T0 *= ureg.keV
     n0 *= ureg.m**(-3)
     rs = np.linspace(0, inputs['minor_radius'], inputs['num_r_points'])
@@ -266,7 +276,7 @@ def get_powers(n0, t, T0, inputs, p_fusion=None):
     p_ohmic = popcon.get_p_ohmic_classical(Ts, ns, rs, inputs['plasma_current'],
                                         inputs['major_radius'], inputs['minor_radius'],
                                         inputs['areal_elongation'], reaction=inputs['reaction'],
-                                        impurities=inputs['impurities'])
+                                        impurities=inputs['impurities'], f_He=inputs['f_He'])
     
     # p_ohmic = 0 * ureg.MW
     
@@ -292,7 +302,8 @@ def get_powers(n0, t, T0, inputs, p_fusion=None):
                                     inputs['areal_elongation'], 
                                     energy_confinement_time=tau_E, 
                                     reaction=inputs['reaction'],
-                                    impurities=inputs['impurities'])
+                                    impurities=inputs['impurities'],
+                                    f_He=inputs['f_He'])
     # print('p_loss = {}'.format(p_loss.to(ureg.MW)))
 
     ignition_fraction = (p_alpha / p_loss).magnitude
@@ -386,7 +397,8 @@ def get_dndt(t, n0, inputs, T0, dTdt=0*ureg.keV/ureg.s, change_DT=False, final_f
 
     V_plasma = 2 * np.pi**2 * inputs['major_radius'] * inputs['minor_radius']**2 * inputs['areal_elongation']
 
-    pressure_factor = popcon.get_total_pressure_factor(reaction=inputs['reaction'], impurities=inputs['impurities'])
+    pressure_factor = popcon.get_total_pressure_factor(reaction=inputs['reaction'], impurities=inputs['impurities'],
+                                                       f_He=inputs['f_He'])
 
     dwdt = dWdt / V_plasma
     dndt = (dwdt - 1.5 * pressure_factor * n_ave * dTdt) / (1.5 * pressure_factor * T_ave)
@@ -407,7 +419,8 @@ def get_dTdt(t, T0, inputs, n0, dndt=0*ureg.m**(-3)/ureg.s, change_DT=False, fin
 
     V_plasma = 2 * np.pi**2 * inputs['major_radius'] * inputs['minor_radius']**2 * inputs['areal_elongation']
 
-    pressure_factor = popcon.get_total_pressure_factor(reaction=inputs['reaction'], impurities=inputs['impurities'])
+    pressure_factor = popcon.get_total_pressure_factor(reaction=inputs['reaction'], impurities=inputs['impurities'],
+                                                       f_He=inputs['f_He'])
 
     dwdt = dWdt / V_plasma
     dTdt = (dwdt - 1.5 * pressure_factor * T_ave * dndt) / (1.5 * pressure_factor * n_ave)
@@ -524,6 +537,7 @@ fig_n, ax_n= plt.subplots(nrows=2, ncols=2, figsize=[10, 6])
 ax_n[1,0].plot(sol_n.t, ns)
 ax_n[1,0].set_xlabel('Time [s]')
 ax_n[1,0].set_ylabel('n0 [$m^{-3}$]')
+ax_n[1,0].set_ylim(0, 1e21)
 ax_n[1,0].grid()
 ax_n[1,0].set_title('Density')
 
@@ -539,6 +553,7 @@ p_rads_n = np.zeros(ns.shape)
 p_losses_n = np.zeros(ns.shape)
 f_Krs_n = np.zeros(ns.shape)
 f_DTs_n = np.zeros(ns.shape)
+p_auxs_n = np.zeros(ns.shape)
 
 
 for i,t_i in enumerate(sol_n.t):
@@ -555,11 +570,14 @@ for i,t_i in enumerate(sol_n.t):
     p_rads_n[i] = p_rad_n.magnitude
     p_losses_n[i] = p_loss_n.magnitude
     f_DTs_n[i] = inputs['DT_ratio']
+    p_auxs_n[i] = get_P_aux(t_i, starting_p_aux_0, inputs['reduce_P_aux']).magnitude
 
 ax_n[0,0].plot(sol_n.t, dWdts_n, label='$dW/dt$')
 ax_n[0,0].plot(sol_n.t, p_ohmics_n, label='$P_{ohmic}$')
+ax_n[0,0].plot(sol_n.t, p_auxs_n, label='$P_{aux}$')
 ax_n[0,0].set_xlabel('Time [s]')
 ax_n[0,0].set_ylabel('dW/dt [MW]')
+ax_n[0,0].set_ylim(-20, 100)
 ax_n[0,0].grid()
 ax_n[0,0].legend()
 ax_n[0,0].set_title('$dW/dt$')
@@ -568,6 +586,7 @@ ax_n[0,1].plot(sol_n.t, dndts, label='$dn_0/dt$')
 ax_n[0,1].plot(sol_n.t, pumping_rates, label='$n_0/tau_E$')
 ax_n[0,1].set_xlabel('Time [s]')
 ax_n[0,1].set_ylabel('$dn_0/dt$ $[m^{-3} s^{-1}]$')
+ax_n[0,1].set_ylim(-1e20, 1e21)
 ax_n[0,1].legend()
 ax_n[0,1].grid()
 ax_n[0,1].set_title('$dn_0/dt$')
@@ -629,15 +648,17 @@ print('greenwald limit: {}'.format(greenwald_limit))
 
 
 sol_T3 = scipy.integrate.solve_ivp(get_dTdt, 
-                                [0, 70], 
+                                [0, 85], 
                                 np.array([T_change]),
                                 args=(inputs,n_2, 0*ureg.m**(-3)/ureg.s, change_DT, final_f_DT, fix_f_Kr),
                                 method='RK45',
-                                t_eval=np.linspace(0, 70, 140))
+                                t_eval=np.linspace(0, 85, 170))
 
 Ts3 = sol_T3.y.squeeze() * ureg.keV
 print(sol_T3)
 print('-------------------------------------------')
+
+print('Final Temperature: ', Ts3[-1])
 # print(sol.y)
 fig_T3, ax_T3= plt.subplots(nrows=3, ncols=2, figsize=[10, 6])
 ax_T3[1,0].plot(sol_T3.t, Ts3)
@@ -729,7 +750,7 @@ def add_title(ax, title, colors=['black'], y_frac=[0.6, 0.4, 0.1]):
     for i,title_i in enumerate(title):
         bot, top = ax.get_ylim()
         left, right = ax.get_xlim()
-        right = 120
+        right = 150
         ax.text((right - left)*0.95 + left,
                 (top - bot)*y_frac[i] + bot,
                 title_i,
@@ -800,6 +821,7 @@ n_edges_all = ns_all * inputs['n_edge_factor']
 
 peak_greenwald = popcon.get_peak_greenwald(inputs['plasma_current'], inputs['minor_radius'], inputs['n_edge_factor'], inputs['profile_alpha']['n'])
 
+
 time_inds = [T_change_ind, n_2_ind + T_change_ind, len(ts_all)-1]
 leg_names = ['leg_1', 'leg_2', 'leg_3']
 
@@ -843,7 +865,7 @@ for j,ind in enumerate(time_inds):
     # ax_all[1,1].plot(ts_all, p_losses_all, color='purple', linewidth=lw)
     ax_all[2,1].set_ylabel('[MW]')
     ax_all[2,1].set_ylim(0, np.max([p_LHs_all.max(), p_SOLs_all.max()])*1.05)
-    add_title(ax_all[2,1],['P_SOL', 'P_LH'], colors=[line_color, 'red'],
+    add_title(ax_all[2,1],['P_SOL', 'LH Threshold'], colors=[line_color, 'red'],
             y_frac=[0.4, 0.7])
 
     ax_all[3,1].plot(ts_all[:ind], n_edges_all[:ind]/(1e20), color=line_color, linewidth=lw)
@@ -875,6 +897,27 @@ for j,ind in enumerate(time_inds):
 
 first_wall_area = (2 * np.pi * inputs['major_radius']) * (2 * np.pi * (inputs['minor_radius'] + 0.01 * ureg.m)) * np.sqrt((1 + inputs['areal_elongation']**2) / 2)
 
+
+## Get average values:
+total_time = ts_all[-1] - ts_all[0]
+ave_P_aux = scipy.integrate.trapezoid(p_auxs_all, ts_all) / total_time
+ave_P_fus = scipy.integrate.trapezoid(p_fusions_all, ts_all) / total_time
+print('\n')
+print('Total Time ......................................... {:.1f}'.format(total_time))
+print('Final Temperature: ................................. {:.1f}'.format(Ts3[-1]))
+print('Final Peak Density: ................................ {:.3e}'.format(ns_all[-1]))
+print('Final Separatrix Density: .......................... {:.3e}'.format(ns_all[-1] * inputs['n_edge_factor']))
+print('Final f_Kr ......................................... {:.3e}'.format(f_Krs_all[-1]))
+print('Final f_DT ......................................... {:.3e}'.format(f_DTs_all[-1]))
+print('Final Fusion Power: ................................ {:.1f}'.format( p_fusions_T3[-1]))
+print('Final P_SOL ........................................ {:.1f}'.format(p_SOLs_all[-1]))
+print('Average Auxillary Power ............................ {:.3f}'.format(ave_P_aux))
+print('Average Fusion Power ............................... {:.3f}'.format(ave_P_fus))
+print('Ave Auxillary Power over 1000 s .................... {:.3f}'.format((ave_P_aux * total_time + 0.0 * (1000 - total_time))/1000))
+print('Ave Fusion Power over 1000 s ....................... {:.3f}'.format((ave_P_fus * total_time + p_fusions_all[-1] * (1000 - total_time))/1000))
+print('q* ................................................. {:.3f}'.format(q_star_eff))
+print('\n')
+
 print('P_neutron: {} MW'.format(p_fusions_all[-1]*4/5))
 print('P_neutron / S: {} MW/m^2'.format(p_fusions_all[-1]*4/5 / first_wall_area))
 print('P_rad / S: {} MW/m^2'.format(p_rads_all[-1] / first_wall_area))
@@ -883,24 +926,24 @@ print('n_sep: {} m^-3'.format(ns_all[-1]*inputs['n_edge_factor']))
 print('P_SOL B_T / R: {}'.format(p_SOLs_all[-1] * ureg.MW * inputs['magnetic_field_on_axis'] / inputs['major_radius']))
 print('P_SOL B_T / R / n^2: {}'.format((p_SOLs_all[-1] * ureg.MW * inputs['magnetic_field_on_axis'] / inputs['major_radius'] / (ns_all[-1] * inputs['n_edge_factor'])**2).to_reduced_units()))
 
-fig_p, ax_p = plt.subplots(1,1, figsize=[4,4], dpi=150)
+fig_p, ax_p = plt.subplots(1,1, figsize=[3,4], dpi=150)
 ns_start = popcon.get_parabolic_profile(ns_all[0], rs, inputs['minor_radius'], ns_all[0]*inputs['n_edge_factor'], alpha=inputs['profile_alpha']['n'])
 ns_end = popcon.get_parabolic_profile(ns_all[-1], rs, inputs['minor_radius'], ns_all[-1]*inputs['n_edge_factor'], alpha=inputs['profile_alpha']['n'])
 ax_p.plot(rs/inputs['minor_radius'], ns_start, color='blue', label='$t=0$')
 ax_p.plot(rs/inputs['minor_radius'], ns_end, color='red', label='Flat-top')
-ax_p.set_xlabel('rho')
-ax_p.set_ylabel('$n$ [m${}^{-3}$]')
+ax_p.set_xlabel('$r/a$', fontsize=14)
+ax_p.set_ylabel('$n_e$ [m${}^{-3}$]', fontsize=14)
 ax_p.legend()
 fig_p.tight_layout()
 fig_p.savefig('density_profile.png')
 
-fig_p2, ax_p2 = plt.subplots(1,1, figsize=[4,4], dpi=150)
+fig_p2, ax_p2 = plt.subplots(1,1, figsize=[3,4], dpi=150)
 Ts_start = popcon.get_parabolic_profile(Ts_all[0], rs, inputs['minor_radius'], inputs['T_edge'], alpha=inputs['profile_alpha']['T'])
 Ts_end = popcon.get_parabolic_profile(Ts_all[-1], rs, inputs['minor_radius'], inputs['T_edge'], alpha=inputs['profile_alpha']['T'])
 ax_p2.plot(rs/inputs['minor_radius'], Ts_start, color='blue', label='$t=0$')
 ax_p2.plot(rs/inputs['minor_radius'], Ts_end, color='red', label='Flat-top')
-ax_p2.set_xlabel('rho')
-ax_p2.set_ylabel('$T$ [keV]')
+ax_p2.set_xlabel('$r/a$', fontsize=14)
+ax_p2.set_ylabel('$T$ [keV]', fontsize=14)
 ax_p2.legend()
 fig_p2.tight_layout()
 fig_p2.savefig('temperature_profile.png')
@@ -922,42 +965,43 @@ plot_inputs['contours']['P_auxillary'] = {'levels': [0, 10, 20, 40, 60, 80, 100]
 # plot_inputs['contours']['bernert_density_fraction'] = {'levels': [0.1, 1.0, 5.0, 10.0, 20.0], 'colors':'grey'}
 # plot_inputs['contours']['P_LH_fraction'] = {'levels': [1.0], 'colors':'gold'}
 
-# plot_inputs['plot_ignition'] = True
+plot_inputs['plot_ignition'] = True
 
-# time_inds = [T_change_ind, n_2_ind + T_change_ind, np.argmin(np.abs(80 - ts_all))]
-# for j,time_ind in enumerate(time_inds):
-#     if j==0:
-#         step_inds = np.arange(0, time_ind, 4)
-#     else:
-#         step_inds = np.arange(time_inds[j-1], time_ind, 4)
-#     # Make sure last time_step is always included in gif
-#     if step_inds[-1] < time_ind:
-#         step_inds = np.append(step_inds, time_ind)
-#     directory = 'Leg_{}'.format(j+1)
-#     if not os.path.isdir(directory):
-#         os.mkdir(directory)
+time_inds = [T_change_ind, n_2_ind + T_change_ind, np.argmin(np.abs(120 - ts_all))]
+for j,time_ind in enumerate(time_inds):
+    if j==0:
+        step_inds = np.arange(0, time_ind, 1)
+    else:
+        step_inds = np.arange(time_inds[j-1], time_ind, 2)
+    # Make sure last time_step is always included in gif
+    if step_inds[-1] < time_ind:
+        step_inds = np.append(step_inds, time_ind)
+    directory = 'Leg_{}'.format(j+1)
+    if not os.path.isdir(directory):
+        os.mkdir(directory)
 
-#     images = []
-#     for k,step_ind in enumerate(step_inds):
-#         plot_inputs['filename'] = os.path.join(directory, 'iris_t={:.1f}s.png'.format(ts_all[step_ind]))
+    images = []
+    for k,step_ind in enumerate(step_inds):
+        plot_inputs['filename'] = os.path.join(directory, 'iris_t={:.1f}s.png'.format(ts_all[step_ind]))
 
-#         if not os.path.isfile(plot_inputs['filename']):
+        if not os.path.isfile(plot_inputs['filename']):
 
-#             inputs['DT_ratio'] = f_DTs_all[step_ind]
-#             inputs['impurities'] = {'Kr':[36, f_Krs_all[step_ind]]}
+            inputs['DT_ratio'] = f_DTs_all[step_ind]
+            inputs['impurities'] = {'Kr':[36, f_Krs_all[step_ind]]}
 
-#             output = popcon.get_all_parameters(inputs)
-#             fig, ax = popcon.plot_popcon(output, plot_inputs)
+            output = popcon.get_all_parameters(inputs)
+            fig, ax = popcon.plot_popcon(output, plot_inputs)
 
-#             ax.plot(Ts_all[step_ind], ns_all[step_ind], '*g', ms=20)
-#             fig.savefig(plot_inputs['filename'])
-#             plt.close(fig)
+            ax.plot(Ts_all[step_ind], ns_all[step_ind], '*g', ms=20)
+            fig.savefig(plot_inputs['filename'])
+            plt.close(fig)
 
-#         images.append(imageio.imread(plot_inputs['filename']))
+        images.append(imageio.imread(plot_inputs['filename']))
 
-
-#     imageio.mimsave(os.path.join(directory, 'iris_leg_{}.gif'.format(j+1)), images, fps=5)
-
+    if j==0:
+        imageio.mimsave(os.path.join(directory, 'iris_leg_{}.gif'.format(j+1)), images, fps=10)
+    else:
+        imageio.mimsave(os.path.join(directory, 'iris_leg_{}.gif'.format(j+1)), images, fps=15)
 
 
 
@@ -977,7 +1021,7 @@ if plot_dWdt_contour:
     # temp = 7
     for j, n_i in enumerate(ns2):
         for i,T_i in enumerate(Ts2):
-            dWdt2_ij, *_ = get_dWdt(n_i, 0, T_i, inputs)
+            dWdt2_ij, *_ = get_dWdt(n_i, 0, T_i, inputs, fix_f_Kr=False)
             dWdts2[i,j] = dWdt2_ij.magnitude
             # dndts_i = get_dndt(0, n_i, inputs, T_i)
             # dndts2[i,j] = dndts_i
