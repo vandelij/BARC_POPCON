@@ -446,11 +446,15 @@ def get_p_bremmstrahlung(n_es, T_es, rs, areal_elongation, major_radius, reactio
     return p_bremmstrahlung
 
 
-def get_total_pressure_factor(reaction='DT', impurities=None):
+def get_total_pressure_factor(reaction='DT', impurities=None, f_He=0.0):
     electron_pressure_factor = 1
     if reaction=='DT' or reaction=='DD':
         fusion_ion_pressure_factor = 1
+    
     impurity_ion_pressure_factor = 0
+    # Add helium ash to impurity pressure factor, which should not be included in the impurities dictionary
+    impurity_ion_pressure_factor += f_He
+    fusion_ion_pressure_factor -= 2 * f_He
     if impurities:
         for element in impurities.keys():
             f_i = impurities[element][1]
@@ -464,13 +468,17 @@ def get_total_pressure_factor(reaction='DT', impurities=None):
 
 def get_s_loss(n_es, T_es,
               energy_confinement_time=1.0*ureg.second,
-              reaction='DT', impurities=None):
+              reaction='DT', impurities=None, f_He=0.0):
     # Calculate total plasma pressure
     electron_pressures = n_es * T_es
     if reaction=='DT'  or reaction=='DD':
         fusion_reactant_ion_pressures = n_es * T_es
     
     impurity_ion_pressures = np.zeros(np.shape(n_es)) * electron_pressures.units
+
+    # Add helium ash to impurity pressures, which should not be included in the impurities dictionary
+    impurity_ion_pressures += electron_pressures * f_He
+    fusion_reactant_ion_pressures -= f_He * 2 * electron_pressures
     if impurities:
         for element in impurities.keys():
             f_i = impurities[element][1]
@@ -488,13 +496,17 @@ def get_s_loss(n_es, T_es,
     return p_loss
 
 
-def get_plasma_energy_density(n_es, T_es, reaction='DT', impurities=None):
+def get_plasma_energy_density(n_es, T_es, reaction='DT', impurities=None, f_He=0.0):
     # Calculate total plasma pressure
     electron_pressures = n_es * T_es
     if reaction=='DT'  or reaction=='DD':
         fusion_reactant_ion_pressures = n_es * T_es
     
     impurity_ion_pressures = np.zeros(np.shape(n_es))
+    # Add helium ash to impurity pressures, which should not be included in the impurities dictionary
+    impurity_ion_pressures += electron_pressures * f_He
+    fusion_reactant_ion_pressures -= f_He * 2 * electron_pressures
+
     if impurities:
         for element in impurities.keys():
             f_i = impurities[element][1]
@@ -514,7 +526,8 @@ def get_plasma_energy(n_es, T_es, rs, major_radius, areal_elongation, reaction='
 def get_p_total_loss(n_es, T_es, rs, major_radius, areal_elongation,
                      energy_confinement_time=1.0*ureg.second,
                      reaction='DT',
-                     impurities=None):
+                     impurities=None,
+                     f_He=0.0):
     p_total_loss = get_vol_integral(get_s_loss,
                                     n_es,
                                     T_es,
@@ -523,14 +536,16 @@ def get_p_total_loss(n_es, T_es, rs, major_radius, areal_elongation,
                                     areal_elongation,
                                     energy_confinement_time=energy_confinement_time,
                                     reaction=reaction,
-                                    impurities=impurities)
+                                    impurities=impurities,
+                                    f_He=f_He)
     return p_total_loss
 
 
 def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
               major_radius, energy_confinement_time, 
               method='total', p_radiation=None,
-              reaction='DT', impurities=None):
+              reaction='DT', impurities=None,
+              f_He=0.0):
 
     # Calculate volumetric average power loss (dU/dt) of plasma
 
@@ -546,7 +561,8 @@ def get_p_sol(n_es, T_es, rs, areal_elongation, minor_radius,
                                     areal_elongation,
                                     energy_confinement_time=energy_confinement_time,
                                     reaction=reaction,
-                                    impurities=impurities)
+                                    impurities=impurities,
+                                    f_He=f_He)
     # print('p_total_loss:{}'.format(p_total_loss))
 
     if 'total' in method.lower():
@@ -688,14 +704,15 @@ def p_aux_root_func(energy_confinement_time,
                     p_sol_method, scaling_method,
                     plasma_current,
                     major_radius, minor_radius, kappa,
-                    density, magnetic_field_on_axis, H, A, alpha_fraction):
+                    density, magnetic_field_on_axis, H, A, alpha_fraction,
+                    f_He):
     
     p_alpha = p_fusion * alpha_fraction
     p_sol = get_p_sol(n_es, T_es, rs, kappa, 
                     minor_radius, major_radius,
                     energy_confinement_time*ureg.second, method=p_sol_method, 
                     p_radiation=p_radiation,
-                    reaction=reaction, impurities=impurities)
+                    reaction=reaction, impurities=impurities, f_He=f_He)
     
     p_aux_1 = get_p_auxillary(p_fusion, p_radiation,
                             p_ohmic, p_sol).to(ureg.MW).magnitude
@@ -737,7 +754,8 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
                     plasma_current=None,
                     major_radius=None, minor_radius=None, kappa=None,
                     density=None, magnetic_field_on_axis=None, H=1.0, A=2.5,
-                    alpha_fraction=0.2013):
+                    alpha_fraction=0.2013,
+                    f_He=0.0):
     """ Uses the p_aux_root_func function to find the root of the difference of P_auxillary
     calculated at various energy confinement times using P_loss to calculate P_auxillary, and using
     the confinement time empircal scalings to calculate P_auxillary"""
@@ -752,7 +770,7 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
                                         p_sol_method, scaling_method,
                                         plasma_current,
                                         major_radius, minor_radius, kappa,
-                                        density, magnetic_field_on_axis, H, A, alpha_fraction))
+                                        density, magnetic_field_on_axis, H, A, alpha_fraction, f_He))
     except:
         # if root finding failed, try to adjust the upper bound as there may be multiple roots, but
         # we want to find the smallest one
@@ -767,7 +785,7 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
                                 p_sol_method, scaling_method,
                                 plasma_current,
                                 major_radius, minor_radius, kappa,
-                                density, magnetic_field_on_axis, H, A, alpha_fraction)
+                                density, magnetic_field_on_axis, H, A, alpha_fraction, f_He)
             new_upper_bound = get_new_upper_bound(times, ys)
 
         # if no roots were found, we may have not have good enough resolution, so try to 
@@ -792,7 +810,7 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
                                     p_sol_method, scaling_method,
                                     plasma_current,
                                     major_radius, minor_radius, kappa,
-                                    density, magnetic_field_on_axis, H, A, alpha_fraction)
+                                    density, magnetic_field_on_axis, H, A, alpha_fraction, f_He)
                 new_upper_bound = get_new_upper_bound(times, ys)
             except:
 
@@ -809,7 +827,7 @@ def get_converged_confinement_time(lower_bound=1e-4, upper_bound=1e3,
                                             p_sol_method, scaling_method,
                                             plasma_current,
                                             major_radius, minor_radius, kappa,
-                                            density, magnetic_field_on_axis, H, A))
+                                            density, magnetic_field_on_axis, H, A, alpha_fraction, f_He))
             print('density={:.2e}: energy_confinement_time = {:.3f}'.format(density, root))
         except:
             # If a root cannot be found, then use the time at which the minimum difference 
@@ -1000,6 +1018,14 @@ def get_giacomin_density_limit(inverse_aspect_ratio, minor_radius, major_radius,
     
     return n_lim
 
+def get_peak_giacomin_density(n_edge_factor, inverse_aspect_ratio, minor_radius, major_radius, p_SOL,
+                               safety_factor, areal_elongation, magnetic_field_on_axis, alpha=1.0):
+    n_edge = get_giacomin_density_limit(inverse_aspect_ratio, minor_radius, major_radius, p_SOL,
+                                       safety_factor, areal_elongation, magnetic_field_on_axis,
+                                       alpha=alpha)
+    n_peak = n_edge / n_edge_factor
+    return n_peak
+
 
 def get_q_star_eff(major_radius, minor_radius, areal_elongation, plasma_current, magnetic_field_on_axis):
     
@@ -1027,9 +1053,9 @@ def get_all_parameters(inputs):
     
     inputs = initialize_inputs(inputs)
 
-    q_star = get_q_star(inputs['minor_radius'], inputs['major_radius'],
-                        inputs['areal_elongation'], inputs['magnetic_field_on_axis'],
-                        inputs['plasma_current'])
+    q_star = get_q_star_eff(inputs['major_radius'], inputs['minor_radius'],
+                            inputs['areal_elongation'], inputs['plasma_current'],
+                            inputs['magnetic_field_on_axis'])
     
     if 'num_r_points' not in inputs.keys():
         inputs['num_r_points'] = 50
@@ -1054,7 +1080,8 @@ def get_all_parameters(inputs):
               'Q': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'ignition_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
               'sepOS_density_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
-              'bernert_density_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points']))}
+              'bernert_density_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points'])),
+              'giacomin_ricci_fraction': np.zeros((inputs['num_T_points'], inputs['num_n_points']))}
     
     output['greenwald_density'] = get_greenwald_density(inputs['plasma_current'], inputs['minor_radius'])
     output['greenwald_fraction'] = volumetric_densities / output['greenwald_density']
@@ -1129,7 +1156,8 @@ def get_all_parameters(inputs):
                     density=n_e, 
                     magnetic_field_on_axis=inputs['magnetic_field_on_axis'], 
                     H=inputs['confinement']['H'], 
-                    A=inputs['A'])
+                    A=inputs['A'],
+                    f_He=inputs['f_He'])
             
             output['energy_confinement_time'][i,j] = tau_E.to(ureg.second).magnitude
 
@@ -1137,7 +1165,8 @@ def get_all_parameters(inputs):
                                              inputs['minor_radius'], inputs['major_radius'],
                                              tau_E, method=inputs['P_SOL_method'], 
                                              p_radiation=output['P_radiation'][i,j]*ureg.MW,
-                                             reaction=inputs['reaction'], impurities=inputs['impurities']).to(ureg.MW).magnitude
+                                             reaction=inputs['reaction'], impurities=inputs['impurities'],
+                                             f_He=inputs['f_He']).to(ureg.MW).magnitude
             output['P_loss'][i,j] = output['P_SOL'][i,j] + output['P_radiation'][i,j]
             
             output['P_auxillary'][i,j] = get_p_auxillary(output['P_fusion'][i,j]*ureg.MW, output['P_radiation'][i,j]*ureg.MW,
@@ -1177,12 +1206,21 @@ def get_all_parameters(inputs):
                                                                        inputs['magnetic_field_on_axis'],
                                                                        inputs['n_edge_factor']).to(ureg.meter**(-3)) \
                                                                        ).magnitude
-            output['bernert_density_fraction'][i,j] = (n_e / get_bernert_density_limit(
-                                                                (output['P_fusion'][i,j] + output['P_ohmic'][i,j] + output['P_auxillary'][i,j]) * ureg.MW,
-                                                                inputs['plasma_current'],
-                                                                q_star,
-                                                                inputs['n_edge_factor']).to(ureg.meter**(-3)) \
-                                                                ).magnitude
+            # output['bernert_density_fraction'][i,j] = (n_e / get_bernert_density_limit(
+            #                                                     (output['P_fusion'][i,j] + output['P_ohmic'][i,j] + output['P_auxillary'][i,j]) * ureg.MW,
+            #                                                     inputs['plasma_current'],
+            #                                                     q_star,
+            #                                                     inputs['n_edge_factor']).to(ureg.meter**(-3)) \
+            #                                                     ).magnitude
+            output['giacomin_ricci_fraction'][i,j] = (n_e / get_peak_giacomin_density(inputs['n_edge_factor'],
+                                                                                      inputs['inverse_aspect_ratio'],
+                                                                                      inputs['minor_radius'],
+                                                                                      inputs['major_radius'],
+                                                                                      output['P_SOL'][i,j]*ureg.MW,
+                                                                                      q_star,
+                                                                                      inputs['areal_elongation'],
+                                                                                      inputs['magnetic_field_on_axis'])).magnitude
+            
             
             
             
@@ -1226,7 +1264,8 @@ def initialize_plot_inputs(plot_inputs, outputs):
                                        'greenwald_fraction': '$n/n_G$',
                                        'peak_greenwald_fraction': '$n/n_G$',
                                        'sepOS_density_fraction': '$n/n_{SepOS}$',
-                                       'bernert_density_fraction': '$n/n_{bernert}$'}
+                                       'bernert_density_fraction': '$n/n_{bernert}$',
+                                       'giacomin_ricci_fraction': '$n/n_{GR}$'}
     if 'plot_ignition' not in plot_inputs.keys():
         plot_inputs['plot_ignition'] = False
     if 'title' not in plot_inputs.keys():
